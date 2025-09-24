@@ -240,8 +240,9 @@ async function runFlow(
       })
       const llmOutput = chat.choices?.[0]?.message?.content ?? ''
       
-      // 为每个 LLM 节点创建唯一的变量名
-      const llmVarName = `llm_text_${nodeId}`
+      // 为每个 LLM 节点创建唯一且安全的变量名（将连字符等替换为下划线）
+      const safeId = String(nodeId).replace(/[^a-zA-Z0-9_]/g, '_')
+      const llmVarName = `llm_text_${safeId}`
       ctx.variables[llmVarName] = llmOutput
       
       // 保持向后兼容：最后一个 LLM 的输出仍然设置为 llm_text
@@ -772,7 +773,7 @@ export default function App() {
             color: '#6b7280'
           }}>
             <strong>节点 ID:</strong> {selected.id}<br/>
-            <strong>LLM 输出变量:</strong> <code style={{backgroundColor: '#e5e7eb', padding: '2px 4px', borderRadius: '2px'}}>{`{{llm_text_${selected.id}}}`}</code>
+            <strong>LLM 输出变量:</strong> <code style={{backgroundColor: '#e5e7eb', padding: '2px 4px', borderRadius: '2px'}}>{`{{llm_text_${String(selected.id).replace(/[^a-zA-Z0-9_]/g, '_')}}}`}</code>
           </div>
           <label>API 类型：
             <select value={cfg.provider || 'qwen'} onChange={(e) => {
