@@ -1,55 +1,160 @@
-# AI-Flow 高度自定义的AI工作流
+# AI-Flow: 高度自定义的 AI 工作流构建器
 
-- Dify-like minimal workflow (React Flow + Express)
+AI-Flow 是一个类似 Dify 的最小化工作流工具，使用 React Flow 实现可视化节点编辑器，前端基于 React + Vite，后端基于 Express.js。支持知识检索（RAG）、LLM 对话、条件分支、HTTP 请求等节点，构建复杂 AI 管道。
+
+## 特性
+
+- **可视化工作流**: 使用 React Flow 拖拽节点、连接边，构建自定义 AI 流程。
+- **知识库管理**: 在内存中存储文本嵌入（使用 Qwen text-embedding-v3），支持文件/文本上传、余弦相似度检索。
+- **LLM 集成**: 支持 Qwen（阿里云百炼）和 OpenAI 兼容的聊天完成，模板化提示词。
+- **条件分支**: 基于变量的 if/elif/else 逻辑，支持多种运算符（包含、等于、空值等）。
+- **HTTP 请求**: 代理外部 API 调用，支持变量替换、JSON/文本 body。
+- **直接回复**: 使用 LLM 输出或模板渲染最终答案。
+- **聊天界面**: 运行工作流后显示历史对话，支持导入示例知识。
+- **内存优化**: 知识库上限 2000 条，文本分块（800 字符，100 重叠），文件大小限 500KB。
 
 ## 快速开始
 
+### 先决条件
+
+- Node.js >= 18
+- Qwen API Key（从 [阿里云百炼控制台](https://bailian.console.aliyun.com/) 获取）
+
+### 安装
+
 ```bash
-# Windows PowerShell
-cd server; npm i; cd ..
-cd client; npm i; cd ..
+# 克隆项目（假设已存在）
+cd TestData/zeteng/AI-Flow/try
+
+# 安装后端依赖
+cd server && npm install && cd ..
+
+# 安装前端依赖
+cd client && npm install && cd ..
 ```
 
 ### 配置环境变量
 
-- 复制 `server/.env.example` 为 `server/.env`
-- 将 `QWEN_API_KEY` 设置为你的 API 钥匙
-- （你给的是：`sk-a14dcee56184459d9d5eab7a65af3f3f`）这个你不用修改
+- 复制 `server/.env.example` 为 `server/.env`（如果不存在，创建并添加）：
+  ```
+  QWEN_API_KEY=sk-your-api-key-here
+  ```
+- 默认使用提供的 key: `sk-a14dcee56184459d9d5eab7a65af3f3f`（生产环境请替换为自己的）。
 
 ### 启动服务
 
 ```bash
-# 终端 1
-cd server; npm run dev
+# 终端 1: 启动后端 (端口 8787)
+cd server && npm run dev
 
-# 终端 2
-cd client; npm run dev
+# 终端 2: 启动前端 (端口 5173)
+cd client && npm run dev
 ```
 
 - 前端: http://localhost:5173
-- 后端: http://localhost:8787
+- 后端: http://localhost:8787 (健康检查: GET /api/health)
 
-## 使用
+## 使用指南
 
-- 点击“导入示例知识”导入两条样例文档（会在后端进行 `text-embedding-v3` 向量化并存入内存库）。
-- 输入问题，点击“运行工作流”。节点顺序为：`开始` → `知识检索` → `LLM` → `直接回复`。
-- LLM 通过 Qwen 兼容 OpenAI Chat Completions 接口，知识检索通过 `text-embedding-v3` 生成向量并使用余弦相似度检索。
+### 1. 导入知识
+
+- 在聊天界面点击 **导入示例知识**，添加两条样例文档（自动嵌入并存入内存库）。
+- 上传自定义知识：
+  - 在知识检索节点配置面板：粘贴文本或上传 .txt 文件（自动分块向量化）。
+  - API: POST /api/knowledge/upload (multipart form, file 或 text) 或 /api/knowledge/upsert (JSON documents)。
+
+### 2. 构建工作流
+
+- **画布操作**:
+  - 点击 **+ 新建插件** 添加节点（知识检索、条件分支、LLM、HTTP 请求、直接回复）。
+  - 拖拽连接节点（从源句柄到目标）。
+  - 点击节点/边查看/编辑配置，按 Delete 删除（起始节点不可删）。
+  - 条件分支有多个输出句柄 (if/elif/else)。
+
+- **节点类型**:
+  - **开始**: 入口节点，注入 { query } 变量。
+  - **条件分支**: 配置 if/elif/else 条件（变量如 query.kb_text，支持 contains/is_empty 等）。输出分支变量 condition.branch。
+  - **知识检索**: 配置 topK (默认 3)，检索相关片段到 kb_text 变量。
+  - **LLM**: 配置模型 (qwen-plus)、温度、system/user prompt (模板: {{query}}, {{kb_text}}, {{http_text}}, {{llm_text_节点ID}})。输出 llm_text_节点ID。
+  - **HTTP 请求**: 配置方法/URL/headers/body (支持 {var} 替换)，输出 http_data/http_text。
+  - **直接回复**: 模式 (LLM 输出 或 模板 {{llm_text}}/{{query}} 等)，设置最终 answer。
+
+- **运行工作流**:
+  - 在 **输入** 标签输入问题，点击 **发送**。
+  - 流从开始节点执行，支持异步节点顺序。
+  - 输出显示在聊天历史；**输出** 标签显示原始 answer。
+
+### 3. 示例工作流
+
+默认初始流：
+- 开始 → 条件 (query 包含 "技术"?) → [是: 知识检索 → LLM → 直接回复] / [否: 直接回复(Else)]
+
+扩展示例：
+- 添加 HTTP 节点调用外部 API (e.g., URL: https://api.example.com/{user_id})。
+- 多 LLM: 第一个 LLM 输出到变量，第二个 prompt 使用 {{llm_text_first}}。
+
+### 4. 聊天与历史
+
+- 支持连续对话，历史保存在前端状态。
+- 清除记录按钮重置历史。
+- 加载中显示 "正在思考中..."。
 
 ## 项目结构
 
-- **.gitignore**: 忽略不必要的文件，如 `node_modules/` 和构建产物。
-- **README.md**: 项目文档和使用说明。
-- **client/**: 前端 React 应用，使用 Vite 构建和 React Flow 实现工作流可视化。
-  - **package.json**: 前端依赖和脚本配置（`npm run dev` 启动开发服务器）。
-  - **src/index.js**: 前端主入口文件，渲染 React 应用。
-  - **index.html**: HTML 模板文件。
-  - **vite.config.ts**: Vite 构建工具配置。
-  - **_1 后缀文件** (如 `package_1.json`, `index_1.html`): 备份或先前版本文件，可忽略。
-- **server/**: 后端 Express.js 服务器，提供 API 接口。
-  - **package.json**: 后端依赖和脚本配置（`npm run dev` 启动开发服务器）。
-  - **src/index.js**: 后端主入口文件，设置 Express 路由和 Qwen API 集成。
-- **根目录 package-lock.json**: NPM 锁文件，用于依赖版本锁定（可选，用于 monorepo 管理）。
+- **根目录**:
+  - `.gitignore`: 忽略 node_modules 等。
+  - `LICENSE`: 项目许可。
+  - `package-lock.json`: 依赖锁定。
+  - `README.md`: 本文档。
 
-## 参考
+- **client/**: React 前端 (Vite + TypeScript + React Flow)。
+  - `package.json`: 依赖 (reactflow, @types 等)，脚本: `npm run dev`。
+  - `src/App.tsx`: 主组件，节点渲染、配置面板、工作流执行逻辑。
+  - `src/main.tsx`: 入口，渲染 App。
+  - `src/index.js`: 可能为旧入口 (可忽略)。
+  - `src/styles.css`: 样式 (节点卡片、面板等)。
+  - `index.html`: HTML 模板。
+  - `vite.config.ts`: Vite 配置 (端口 5173)。
+  - `_1 后缀文件`: 备份版本 (e.g., package_1.json)，可忽略。
 
-- 阿里云百炼 API 控制台（OpenAI 兼容模式 & 向量接口）：`https://bailian.console.aliyun.com/?spm=5176.29597918.J_SEsSjsNv72yRuRFS2VknO.2.3a797b08FUnvgF&tab=api#/api`
+- **server/**: Express 后端。
+  - `package.json`: 依赖 (express, cors, multer, node-fetch, dotenv)，脚本: `npm run dev` (nodemon)。
+  - `src/index.js`: 主服务器，路由:
+    - `/api/knowledge/*`: 上传/搜索/upsert (嵌入 + 余弦相似度)。
+    - `/api/chat`: LLM 调用 (Qwen/OpenAI 兼容)。
+    - `/api/http-request`: 代理 HTTP (变量替换)。
+    - `/api/health`: 健康检查。
+  - `uploads/`: 临时文件目录 (multer)。
+
+## API 参考
+
+- **POST /api/knowledge/search**: { query, topK } → { matches: [{id, text, score}] }
+- **POST /api/knowledge/upload**: multipart (file) 或 { text } → { inserted, total }
+- **POST /api/chat**: { messages, model, temperature, apiKey?, apiUrl?, provider } → OpenAI 格式响应。
+- **POST /api/http-request**: { method, url, headers, body, variables } → { status_code, content, json }
+
+所有 API 使用 POST，JSON body，CORS 启用。
+
+## 开发与自定义
+
+- **添加节点**: 在 App.tsx 的 createNewNode 函数扩展类型/配置。
+- **扩展后端**: index.js 添加新路由 (e.g., 持久化 KB 到文件/DB)。
+- **样式**: 修改 styles.css 自定义节点主题 (theme-blue 等)。
+- **环境**: 前端 LLM 配置可覆盖后端 .env (per-node API key)。
+
+### 常见问题
+
+- **API Key 无效**: 检查 Qwen 控制台配额，确保兼容模式启用。
+- **嵌入失败**: 文本过长? 自动分块；文件 >500KB 拒绝。
+- **内存溢出**: KB 自动限 2000 条，老条移除。
+- **跨域错误**: 确保前端代理或 CORS 配置正确 (默认启用)。
+- **节点不执行**: 检查边连接；条件分支需匹配 sourceHandle (if/else)。
+
+## 参考与贡献
+
+- **Qwen API**: [阿里云百炼文档](https://bailian.console.aliyun.com/#/api) (OpenAI 兼容 + 嵌入)。
+- **React Flow**: [文档](https://reactflow.dev/) 用于高级节点/边自定义。
+- **依赖**: 前端 ~200MB node_modules；后端轻量。
+- 欢迎 PR！焦点：持久化 KB、更多节点 (e.g., 数据库集成)、流式响应。
+
+项目灵感来源于 Dify/RAG 工具，目标是轻量、可扩展的本地 AI 工作流。
