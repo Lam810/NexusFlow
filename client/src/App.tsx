@@ -59,7 +59,7 @@ function CardNode({ data, id }: any) {
   const showMultiple = data?.handles?.includes('multiple')
   
   return (
-    <div className={`node-card ${data?.theme || ''}`} id={`node-${id}`}>
+    <div className={`node-card ${data?.theme || ''} ${data?.runtimeStatus ? `status-${data.runtimeStatus}` : ''}`} id={`node-${id}`}>
       <div className="node-icon">{data?.icon || '⬢'}</div>
       <div className="node-content">
         <div className="node-title">{data?.label}</div>
@@ -85,7 +85,7 @@ const initialNodes: Node[] = [
   { id: 'kb', type: 'card', position: { x: 300, y: 30 }, data: { label: '知识检索', icon: '📚', theme: 'theme-green', handles: ['left','right'], config: { topK: 3 } as KbConfig } },
   { id: 'llm', type: 'card', position: { x: 550, y: 30 }, data: { label: 'LLM', icon: '🤖', theme: 'theme-purple', handles: ['left','right'], config: { model: 'qwen-plus', temperature: 0.7, systemPrompt: '你是一个有用的中文助手。回答时要基于提供的知识片段，若无依据要明确说明。', userPrompt: '用户问题：{{query}}\n\n知识片段：\n{{kb_text}}' } as LlmConfig } },
   { id: 'reply', type: 'card', position: { x: 800, y: 30 }, data: { label: '直接回复', icon: '🟠', theme: 'theme-orange', handles: ['left'], config: { mode: 'llm', template: '{{llm_text}}' } as AnswerConfig } },
-  { id: 'else-reply', type: 'card', position: { x: 300, y: 120 }, data: { label: '直接回复(Else)', icon: '🟠', theme: 'theme-orange', handles: ['left'], config: { mode: 'template', template: '这是 ELSE 分支：{{query}}' } as AnswerConfig } },
+  { id: 'reply-else', type: 'card', position: { x: 300, y: 120 }, data: { label: '直接回复', icon: '🟠', theme: 'theme-orange', handles: ['left'], config: { mode: 'template', template: '这是 ELSE 分支：{{query}}' } as AnswerConfig } },
 ]
 
 const initialEdges: Edge[] = [
@@ -93,7 +93,7 @@ const initialEdges: Edge[] = [
   { id: 'e1b', source: 'cond', sourceHandle: 'if', target: 'kb' },
   { id: 'e2', source: 'kb', target: 'llm' },
   { id: 'e3', source: 'llm', target: 'reply' },
-  { id: 'e4', source: 'cond', sourceHandle: 'else', target: 'else-reply' },
+  { id: 'e4', source: 'cond', sourceHandle: 'else', target: 'reply-else' },
 ]
 
 async function api(path: string, body?: any) {
@@ -119,7 +119,13 @@ function renderTemplate(tpl: string, vars: Record<string, any>): string {
   })
 }
 
-async function runFlow(query: string, nodes: Node[], edges: Edge[]): Promise<RunContext> {
+async function runFlow(
+  query: string,
+  nodes: Node[],
+  edges: Edge[],
+  onStatus?: (nodeId: string, status: 'running' | 'done') => void,
+  onOutput?: (nodeId: string, output: string) => void,
+): Promise<RunContext> {
   const ctx: RunContext = { query, variables: { query } }
 
   // 条件分支执行函数
@@ -167,6 +173,7 @@ async function runFlow(query: string, nodes: Node[], edges: Edge[]): Promise<Run
     if (!node) return
 
     const nodeType = nodeId.split('-')[0]
+    if (onStatus) onStatus(nodeId, 'running')
     
     if (nodeType === 'cond') {
       const branch = executeConditionalNode(nodeId)
@@ -180,6 +187,7 @@ async function runFlow(query: string, nodes: Node[], edges: Edge[]): Promise<Run
           await executeNode(edge.target)
         }
       }
+      if (onStatus) onStatus(nodeId, 'done')
       return
     }
     if (nodeType === 'kb') {
@@ -188,6 +196,7 @@ async function runFlow(query: string, nodes: Node[], edges: Edge[]): Promise<Run
       ctx.knowledgeMatches = search.matches
       ctx.variables.kb = { result: search.matches }
       ctx.variables.kb_text = (search.matches as KnowledgeMatch[]).map((m) => `【得分${m.score.toFixed(2)}】${m.text}`).join('\n')
+      if (onOutput) onOutput(nodeId, ctx.variables.kb_text)
     }
     
     if (nodeType === 'http') {
@@ -209,6 +218,7 @@ async function runFlow(query: string, nodes: Node[], edges: Edge[]): Promise<Run
         })
         ctx.variables.http_data = httpResult.json || httpResult.content
         ctx.variables.http_text = JSON.stringify(httpResult.json || httpResult.content, null, 2)
+        if (onOutput) onOutput(nodeId, ctx.variables.http_text)
       }
     }
     
@@ -237,6 +247,7 @@ async function runFlow(query: string, nodes: Node[], edges: Edge[]): Promise<Run
       // 保持向后兼容：最后一个 LLM 的输出仍然设置为 llm_text
       ctx.llmText = llmOutput
       ctx.variables.llm_text = llmOutput
+      if (onOutput) onOutput(nodeId, llmOutput)
     }
     
     if (nodeType === 'reply') {
@@ -246,6 +257,7 @@ async function runFlow(query: string, nodes: Node[], edges: Edge[]): Promise<Run
       } else {
         ctx.variables.answer = ctx.llmText || ''
       }
+      if (onOutput) onOutput(nodeId, String(ctx.variables.answer || ''))
     }
     
     // 执行后续连接的节点
@@ -253,6 +265,7 @@ async function runFlow(query: string, nodes: Node[], edges: Edge[]): Promise<Run
     for (const edge of outgoingEdges) {
       await executeNode(edge.target)
     }
+    if (onStatus) onStatus(nodeId, 'done')
   }
 
   // 从开始节点开始执行
@@ -272,6 +285,8 @@ export default function App() {
   const [selectedEdgeId, setSelectedEdgeId] = useState(null)
   const [activeTab, setActiveTab] = useState('input')
   const [collapsed, setCollapsed] = useState(false)
+  const [previewOpen, setPreviewOpen] = useState(true)
+  const [configOpen, setConfigOpen] = useState(false)
   const [showNewNodeMenu, setShowNewNodeMenu] = useState(false)
 
   // 从 nodes 数组和 selectedNodeId 动态获取当前选中的节点
@@ -291,7 +306,26 @@ export default function App() {
     
     try {
       setLoading(true)
-      const ctx = await runFlow(question, nodes, edges)
+      // 清理上一次的进度边样式
+      setEdges((eds) => eds.map(e => ({ ...e, animated: false, style: { ...(e.style || {}), strokeDasharray: '0' } })))
+      const ctx = await runFlow(question, nodes, edges, (nodeId, status) => {
+        // 标记节点状态
+        setNodes((ns) => ns.map(n => n.id === nodeId ? { ...n, data: { ...n.data, runtimeStatus: status } } : n))
+        // 以“进度=虚线动画边”显示：高亮指向该节点的所有入边
+        setEdges((eds) => eds.map(e => {
+          if (e.target === nodeId) {
+            if (status === 'running') {
+              return { ...e, animated: true, style: { ...(e.style || {}), strokeDasharray: '6 4', stroke: '#8b5cf6', strokeWidth: 2 } }
+            }
+            if (status === 'done') {
+              return { ...e, animated: false, style: { ...(e.style || {}), strokeDasharray: '0', stroke: '#8b5cf6', strokeWidth: 2 } }
+            }
+          }
+          return e
+        }))
+      }, (nodeId, output) => {
+        setNodes((ns) => ns.map(n => n.id === nodeId ? { ...n, data: { ...n.data, lastOutput: output } } : n))
+      })
       const result = (ctx as any).variables?.answer ?? ctx.llmText ?? ''
       
       // 添加到聊天记录
@@ -317,6 +351,10 @@ export default function App() {
       setQuestion('')
     } finally {
       setLoading(false)
+      setTimeout(() => {
+        setNodes((ns) => ns.map(n => ({ ...n, data: { ...n.data, runtimeStatus: undefined } })))
+        setEdges((eds) => eds.map(e => ({ ...e, animated: false, style: { ...(e.style || {}), strokeDasharray: '0' } })))
+      }, 800)
     }
   }
 
@@ -616,7 +654,20 @@ export default function App() {
           <div className="panel-subtitle">ELIF 条件（可选）</div>
           <button onClick={() => setNodes((ns) => ns.map(n => n.id === selected.id ? { ...n, data: { ...n.data, config: { ...cfg, elifs: [...cfg.elifs, { variable: 'query', operator: 'contains', value: '' }] } } } : n))}>+ 添加 ELIF</button>
           {cfg.elifs.map((c, idx) => (
-            <div key={idx} style={{padding:'8px', border:'1px solid #eee', borderRadius:8, marginTop:8}}>
+            <div key={idx} style={{padding:'40px 8px 8px 8px', border:'1px solid #eee', borderRadius:8, marginTop:8, position:'relative'}}>
+              <button
+                onClick={() => setNodes((ns) => ns.map(n => n.id === selected.id ? { 
+                  ...n, 
+                  data: { 
+                    ...n.data, 
+                    config: { 
+                      ...cfg, 
+                      elifs: cfg.elifs.filter((_, i) => i !== idx) 
+                    } 
+                  } 
+                } : n))}
+                style={{position:'absolute', right:8, top:8, border:'1px solid #fecaca', background:'#fff5f5', color:'#b91c1c', borderRadius:6, padding:'4px 8px', cursor:'pointer', zIndex:1}}
+              >删除</button>
               <label>变量：
                 <input value={c.variable}
                   onChange={(e) => setNodes((ns) => ns.map(n => n.id === selected.id ? { ...n, data: { ...n.data, config: { ...cfg, elifs: cfg.elifs.map((it,i)=> i===idx?{...it, variable:e.target.value}:it) } } } : n))} />
@@ -654,6 +705,11 @@ export default function App() {
       return (
         <div className="panel">
           <div className="panel-title">知识检索配置</div>
+          {selected.data?.lastOutput && (
+            <label>上次输出：
+              <textarea readOnly value={selected.data.lastOutput} />
+            </label>
+          )}
           <div style={{ 
             backgroundColor: '#f3f4f6', 
             padding: '8px', 
@@ -702,6 +758,11 @@ export default function App() {
       return (
         <div className="panel">
           <div className="panel-title">LLM 配置</div>
+          {selected.data?.lastOutput && (
+            <label>上次输出：
+              <textarea readOnly value={selected.data.lastOutput} />
+            </label>
+          )}
           <div style={{ 
             backgroundColor: '#f3f4f6', 
             padding: '8px', 
@@ -753,6 +814,11 @@ export default function App() {
       return (
         <div className="panel">
           <div className="panel-title">直接回复配置</div>
+          {selected.data?.lastOutput && (
+            <label>上次输出：
+              <textarea readOnly value={selected.data.lastOutput} />
+            </label>
+          )}
           <div style={{ 
             backgroundColor: '#f3f4f6', 
             padding: '8px', 
@@ -780,6 +846,11 @@ export default function App() {
       return (
         <div className="panel">
           <div className="panel-title">HTTP请求配置</div>
+          {selected.data?.lastOutput && (
+            <label>上次输出：
+              <textarea readOnly value={selected.data.lastOutput} />
+            </label>
+          )}
           <div style={{ 
             backgroundColor: '#f3f4f6', 
             padding: '8px', 
@@ -877,6 +948,10 @@ export default function App() {
           onNodeClick={(_, n) => {
             setSelectedNodeId(n.id)
             setSelectedEdgeId(null)
+            // 打开配置面板
+            setActiveTab('config')
+            setConfigOpen(true)
+            setPreviewOpen(false)
           }}
           onEdgeClick={(_, e) => {
             setSelectedEdgeId(e.id)
@@ -889,7 +964,7 @@ export default function App() {
           nodeTypes={nodeTypes}
           defaultEdgeOptions={{ 
             type: 'smoothstep', 
-            animated: true, 
+            animated: false, 
             style: { 
               stroke: '#8b5cf6', 
               strokeWidth: 2 
@@ -905,21 +980,29 @@ export default function App() {
       </div>
       <div className={`right ${collapsed ? 'right-collapsed' : ''}`}>
         <div className="right-header">
-          <div className="tabs">
-            <button className={activeTab==='input'?'tab active':'tab'} onClick={()=>setActiveTab('input')}>输入</button>
-            <button className={activeTab==='config'?'tab active':'tab'} onClick={()=>setActiveTab('config')}>配置</button>
-            <button className={activeTab==='output'?'tab active':'tab'} onClick={()=>setActiveTab('output')}>输出</button>
+          <div className="tabs fixed-tabs">
+            <button
+              className={previewOpen ? 'tab active' : 'tab'}
+              onClick={() => {
+                setActiveTab('input')
+                setPreviewOpen(v => !v)
+                if (configOpen) setConfigOpen(false)
+              }}
+            >预览</button>
+            <button
+              className={configOpen ? 'tab active' : 'tab'}
+              onClick={() => {
+                setActiveTab('config')
+                setConfigOpen(v => !v)
+                if (previewOpen) setPreviewOpen(false)
+              }}
+            >配置</button>
           </div>
-          <button className="collapse-btn" onClick={()=>setCollapsed(v=>!v)}>{collapsed?'展开':'折叠'}</button>
         </div>
-        {activeTab==='input' && chatInterface}
-        {activeTab==='config' && rightPanel}
-        {activeTab==='output' && (
-          <div className="output">
-            <div className="output-title">工作流输出</div>
-            <pre>{answer}</pre>
-          </div>
-        )}
+        <div style={{padding: '12px'}}>
+          {previewOpen && chatInterface}
+          {configOpen && rightPanel}
+        </div>
       </div>
     </div>
   )
