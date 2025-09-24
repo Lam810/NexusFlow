@@ -17,8 +17,17 @@ AI-Flow 是一个类似 Dify 的最小化工作流工具，使用 React Flow 实
 
 ### 先决条件
 
-- Node.js >= 18
+- Node.js >= 20.19.0 或 >= 22.12.0（Vite 7.1.7 要求；当前环境 Node.js v18.18.2 不满足，建议升级 Node.js 以避免兼容性问题。检查：`node --version`）
+- npm >= 9.8.1（随 Node.js 升级自动更新；当前 npm v9.8.1 已满足，但需匹配 Node.js。检查：`npm --version`）
 - Qwen API Key（从 [阿里云百炼控制台](https://bailian.console.aliyun.com/) 获取）
+
+📌 **附加建议**
+- 不要强行忽略版本警告：Node.js 18 和 Vite 7 不兼容是硬性限制，无法绕过。
+- 团队协作时统一 Node 版本：建议在项目根目录加一个 .nvmrc 文件：
+  ```bash
+  echo "20" > .nvmrc
+  ```
+  其他成员运行 `nvm use` 即可自动切换版本。
 
 ### 安装
 
