@@ -31,6 +31,8 @@ type LlmConfig = {
   provider?: 'qwen' | 'openai' | 'local'
 }
 type AnswerConfig = { mode: 'llm' | 'template'; template: string }
+// 扩展：直接回复是否流式输出
+type AnswerConfigEx = AnswerConfig & { stream?: boolean }
 type HttpConfig = {
   method: string
   url: string
@@ -107,6 +109,36 @@ async function api(path: string, body?: any) {
   })
   if (!r.ok) throw new Error(await r.text())
   return r.json()
+}
+
+// SSE stream helper
+async function sseStream(path: string, body: any, onChunk: (text: string) => void): Promise<void> {
+  const r = await fetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+  if (!r.ok || !r.body) throw new Error(await r.text())
+  const reader = (r.body as any).getReader?.()
+  if (!reader) return
+  const decoder = new TextDecoder()
+  let buffer = ''
+  while (true) {
+    const { done, value } = await reader.read()
+    if (done) break
+    buffer += decoder.decode(value, { stream: true })
+    const parts = buffer.split('\n\n')
+    buffer = parts.pop() || ''
+    for (const part of parts) {
+      const line = part.split('\n').find(l => l.startsWith('data: '))
+      if (!line) continue
+      const payload = line.slice(6)
+      if (payload === '[DONE]') continue
+      try {
+        const j = JSON.parse(payload)
+        const delta = j.choices?.[0]?.delta?.content || j.text || ''
+        if (delta) onChunk(delta)
+      } catch (_) {
+        onChunk('')
+      }
+    }
+  }
 }
 
 function renderTemplate(tpl: string, vars: Record<string, any>): string {
@@ -256,8 +288,11 @@ async function runFlow(
     if (nodeType === 'analysis') {
       const cfg = (node.data?.config || { apiUrl: '', apiKey: '', questionTemplate: '请对以下数据进行分析：{{query}}' }) as AnalysisConfig
       const question = renderTemplate(cfg.questionTemplate || '{{query}}', ctx.variables)
-      const result = await api('/api/analysis', { apiUrl: cfg.apiUrl, apiKey: cfg.apiKey, question })
-      const text = result?.text || JSON.stringify(result)
+      let text = ''
+      await sseStream('/api/analysis-stream', { apiUrl: cfg.apiUrl, apiKey: cfg.apiKey, question }, (delta) => {
+        text += delta
+        if (onOutput) onOutput(nodeId, text)
+      })
       ctx.variables.analysis_text = text
       if (onOutput) onOutput(nodeId, text)
     }
@@ -270,15 +305,18 @@ async function runFlow(
         ...(sys ? [{ role: 'system', content: sys }] : []),
         { role: 'user', content: user },
       ]
-      const chat = await api('/api/chat', { 
-        model: cfg.model || 'qwen-plus', 
-        temperature: cfg.temperature ?? 0.7, 
+      let llmOutput = ''
+      await sseStream('/api/chat-stream', {
+        model: cfg.model || 'qwen-plus',
+        temperature: cfg.temperature ?? 0.7,
         messages,
         apiKey: cfg.apiKey,
         apiUrl: cfg.apiUrl,
         provider: cfg.provider || 'qwen'
+      }, (delta) => {
+        llmOutput += delta
+        if (onOutput) onOutput(nodeId, llmOutput)
       })
-      const llmOutput = chat.choices?.[0]?.message?.content ?? ''
       
       // 为每个 LLM 节点创建唯一且安全的变量名（将连字符等替换为下划线）
       const safeId = String(nodeId).replace(/[^a-zA-Z0-9_]/g, '_')
@@ -292,10 +330,21 @@ async function runFlow(
     }
     
     if (nodeType === 'reply') {
-      const cfg = (node.data?.config || { mode: 'template', template: '{{llm_text}}' }) as AnswerConfig
+      const cfg = (node.data?.config || { mode: 'template', template: '{{llm_text}}', stream: false }) as AnswerConfigEx
       // 统一模板渲染
-      ctx.variables.answer = renderTemplate(cfg.template, ctx.variables)
-      if (onOutput) onOutput(nodeId, String(ctx.variables.answer || ''))
+      const rendered = renderTemplate(cfg.template, ctx.variables)
+      if (cfg.stream) {
+        // 简易流式：逐步输出文本
+        ctx.variables.answer = ''
+        for (let i = 0; i < rendered.length; i += 6) {
+          ctx.variables.answer = rendered.slice(0, i + 6)
+          if (onOutput) onOutput(nodeId, String(ctx.variables.answer || ''))
+          await new Promise(r => setTimeout(r, 20))
+        }
+      } else {
+        ctx.variables.answer = rendered
+        if (onOutput) onOutput(nodeId, String(ctx.variables.answer || ''))
+      }
     }
     
     // 执行后续连接的节点
@@ -344,6 +393,23 @@ export default function App() {
     
     try {
       setLoading(true)
+      // 先记录用户问题
+      const userId = `${Date.now()}-user`
+      setChatHistory(prev => ([...prev, { id: userId, question: question.trim(), answer: '', timestamp: Date.now() }]))
+
+      // 记录各节点对应的聊天条目
+      const nodeToChatId: Record<string, string> = {}
+      const getNodeAvatar = (t: string) => {
+        switch (t) {
+          case 'kb': return '📚'
+          case 'llm': return '🤖'
+          case 'http': return '🌐'
+          case 'analysis': return '📊'
+          case 'reply': return '🟠'
+          case 'cond': return '🧩'
+          default: return '🔹'
+        }
+      }
       // 清理上一次的进度边样式
       setEdges((eds) => eds.map(e => ({ ...e, animated: false, style: { ...(e.style || {}), strokeDasharray: '0' } })))
       const ctx = await runFlow(question, nodes, edges, (nodeId, status) => {
@@ -363,29 +429,33 @@ export default function App() {
         }))
       }, (nodeId, output) => {
         setNodes((ns) => ns.map(n => n.id === nodeId ? { ...n, data: { ...n.data, lastOutput: output } } : n))
+        const node = nodes.find(n => n.id === nodeId)
+        const nodeType = nodeId.split('-')[0]
+        const delta = String(output || '')
+        if (delta.trim().length === 0) return
+        // 首次非空输出时创建一条聊天消息，并在之后持续更新
+        if (!nodeToChatId[nodeId]) {
+          nodeToChatId[nodeId] = `${Date.now()}-${nodeId}`
+          const avatar = getNodeAvatar(nodeType)
+          const label = node?.data?.label || nodeType
+          setChatHistory(prev => ([...prev, { id: nodeToChatId[nodeId], question: '', answer: delta, timestamp: Date.now(), meta: { avatar, label } }]))
+        } else {
+          const chatId = nodeToChatId[nodeId]
+          setChatHistory(prev => prev.map(c => c.id === chatId ? { ...c, answer: delta } : c))
+        }
       })
-      const result = (ctx as any).variables?.answer ?? ctx.llmText ?? ''
-      
-      // 添加到聊天记录
-      const newChat = {
-        id: Date.now().toString(),
-        question: question.trim(),
-        answer: result,
-        timestamp: Date.now()
-      }
-      setChatHistory(prev => [...prev, newChat])
+      // 结束：无需另外写入，节点输出已经逐步写入
       
       // 清空输入框
       setQuestion('')
     } catch (e: any) {
       const errorMsg = `出错：${e.message}`
-      const newChat = {
-        id: Date.now().toString(),
-        question: question.trim(),
-        answer: errorMsg,
-        timestamp: Date.now()
-      }
-      setChatHistory(prev => [...prev, newChat])
+      // 将错误写入最后一个占位记录或追加新记录
+      setChatHistory(prev => {
+        if (prev.length === 0) return [{ id: Date.now().toString(), question: question.trim(), answer: errorMsg, timestamp: Date.now() }]
+        const last = prev[prev.length - 1]
+        return prev.map((c, idx) => idx === prev.length - 1 ? { ...last, answer: errorMsg } : c)
+      })
       setQuestion('')
     } finally {
       setLoading(false)
@@ -555,14 +625,7 @@ export default function App() {
       <div className="chat-messages">
         {chatHistory.length === 0 ? (
           <>
-            {loading && (
-              <div className="chat-loading">
-                <div className="chat-avatar">🤖</div>
-                <div className="chat-content">
-                  <div className="chat-text">正在思考中...</div>
-                </div>
-              </div>
-            )}
+            {/* 加载时不显示占位文本 */}
             <div className="chat-empty">
               <div className="chat-empty-icon">💬</div>
               <div className="chat-empty-text">开始对话吧！</div>
@@ -572,30 +635,27 @@ export default function App() {
           <>
             {chatHistory.map((chat) => (
               <div key={chat.id} className="chat-item">
-                <div className="chat-question">
-                  <div className="chat-avatar">👤</div>
-                  <div className="chat-content">
-                    <div className="chat-text">{chat.question}</div>
-                    <div className="chat-time">{new Date(chat.timestamp).toLocaleTimeString()}</div>
+                {chat.question ? (
+                  <div className="chat-question">
+                    <div className="chat-avatar">👤</div>
+                    <div className="chat-content">
+                      <div className="chat-text">{chat.question}</div>
+                      <div className="chat-time">{new Date(chat.timestamp).toLocaleTimeString()}</div>
+                    </div>
                   </div>
-                </div>
-                <div className="chat-answer">
-                  <div className="chat-avatar">🤖</div>
-                  <div className="chat-content">
-                    <div className="chat-text" dangerouslySetInnerHTML={{ __html: renderMarkdownToHtml(String(chat.answer || '')) }} />
-                    <div className="chat-time">{new Date(chat.timestamp).toLocaleTimeString()}</div>
+                ) : null}
+                {String(chat.answer || '').trim().length > 0 ? (
+                  <div className="chat-answer">
+                    <div className="chat-avatar">{(chat as any).meta?.avatar || '🤖'}</div>
+                    <div className="chat-content">
+                      <div className="chat-text" dangerouslySetInnerHTML={{ __html: ((chat as any).meta?.label ? `<div style=\"font-size:12px;color:#64748b;margin-bottom:4px\"><strong>${(chat as any).meta.label}</strong> 输出</div>` : '') + renderMarkdownToHtml(String(chat.answer || '')) }} />
+                      <div className="chat-time">{new Date(chat.timestamp).toLocaleTimeString()}</div>
+                    </div>
                   </div>
-                </div>
+                ) : null}
               </div>
             ))}
-            {loading && (
-              <div className="chat-loading">
-                <div className="chat-avatar">🤖</div>
-                <div className="chat-content">
-                  <div className="chat-text">正在思考中...</div>
-                </div>
-              </div>
-            )}
+            {/* 加载时不显示占位文本 */}
           </>
         )}
       </div>
@@ -833,7 +893,7 @@ export default function App() {
       )
     }
     if (nodeType === 'reply') {
-      const cfg: AnswerConfig = selected.data?.config || { mode: 'template', template: '{{llm_text}}' }
+      const cfg: AnswerConfigEx = selected.data?.config || { mode: 'template', template: '{{llm_text}}', stream: false }
       return (
         <div className="panel">
           <div className="panel-title">直接回复配置</div>
@@ -855,6 +915,9 @@ export default function App() {
           <label>模板（可用变量：{'{{llm_text}}'}、{'{{llm_text_节点ID}}'}、{'{{kb_text}}'}、{'{{query}}'}、{'{{http_text}}'}、{'{{analysis_text}}'}）：</label>
           <textarea value={cfg.template}
             onChange={(e) => setNodes((ns) => ns.map(n => n.id === selected.id ? { ...n, data: { ...n.data, config: { ...cfg, template: e.target.value } } } : n))} />
+          <label style={{marginTop:8}}>流式输出：
+            <input type="checkbox" checked={(cfg as any).stream || false} onChange={(e) => setNodes((ns) => ns.map(n => n.id === selected.id ? { ...n, data: { ...n.data, config: { ...(cfg as any), stream: e.target.checked } } } : n))} />
+          </label>
         </div>
       )
     }

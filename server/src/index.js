@@ -403,6 +403,110 @@ app.post('/api/analysis', async (req, res) => {
   }
 })
 
+// Analysis streaming via chat SSE
+app.post('/api/analysis-stream', async (req, res) => {
+  try {
+    const { apiUrl, apiKey, question } = req.body
+    // If user provided a streaming endpoint, just proxy it (must be SSE compatible)
+    if (apiUrl) {
+      const headers = { 'Content-Type': 'application/json' }
+      if (apiKey) headers['Authorization'] = `Bearer ${apiKey}`
+      const upstream = await fetch(apiUrl, { method: 'POST', headers, body: JSON.stringify({ question, stream: true }) })
+      if (!upstream.ok || !upstream.body) {
+        const text = await upstream.text().catch(()=> '')
+        throw new Error(`Upstream failed: ${upstream.status} ${text}`)
+      }
+      res.setHeader('Content-Type', 'text/event-stream; charset=utf-8')
+      res.setHeader('Cache-Control', 'no-cache')
+      res.setHeader('Connection', 'keep-alive')
+      upstream.body.on('data', chunk => res.write(chunk))
+      upstream.body.on('end', () => res.end())
+      upstream.body.on('error', () => res.end())
+      return
+    }
+    // fallback: stream Qwen chat as analysis
+    if (!QWEN_API_KEY) {
+      res.setHeader('Content-Type', 'text/event-stream; charset=utf-8')
+      res.write(`data: {"text":"分析任务已接收：${String(question || '')}"}\n\n`)
+      return res.end()
+    }
+    const r = await fetch(`${QWEN_BASE_URL}/chat/completions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${QWEN_API_KEY}` },
+      body: JSON.stringify({
+        model: 'qwen-plus',
+        messages: [{ role: 'user', content: `请基于你的数据知识，对以下问题进行数据分析与可视化建议：${question}` }],
+        temperature: 0.3,
+        stream: true
+      })
+    })
+    if (!r.ok || !r.body) {
+      const text = await r.text().catch(()=> '')
+      throw new Error(`Upstream failed: ${r.status} ${text}`)
+    }
+    res.setHeader('Content-Type', 'text/event-stream; charset=utf-8')
+    res.setHeader('Cache-Control', 'no-cache')
+    res.setHeader('Connection', 'keep-alive')
+    r.body.on('data', chunk => res.write(chunk))
+    r.body.on('end', () => res.end())
+    r.body.on('error', () => res.end())
+  } catch (e) {
+    try { res.status(500).end(`data: {"error":"${String(e.message || e)}"}\n\n`) } catch {}
+  }
+})
+
+// Chat streaming (SSE passthrough)
+app.post('/api/chat-stream', async (req, res) => {
+  try {
+    const { messages, model = 'qwen-plus', temperature = 0.7, apiKey, apiUrl, provider = 'qwen' } = req.body;
+
+    let key, baseUrl, endpoint;
+    if (provider === 'local') {
+      key = null;
+      baseUrl = apiUrl || 'http://192.168.137.4:8000/v1/chat/completions';
+      endpoint = `${baseUrl}`;
+    } else {
+      key = apiKey || QWEN_API_KEY;
+      baseUrl = apiUrl || (provider === 'openai' ? 'https://api.openai.com/v1' : QWEN_BASE_URL);
+      endpoint = `${baseUrl}/chat/completions`;
+    }
+    if (!key && provider !== 'local') {
+      throw new Error('API key is required for remote models');
+    }
+
+    const headers = { 'Content-Type': 'application/json' };
+    if (key) headers['Authorization'] = `Bearer ${key}`;
+
+    const upstream = await fetch(endpoint, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        model: provider === 'local' ? (model || 'local-model') : model,
+        messages,
+        temperature,
+        stream: true,
+      }),
+    });
+
+    if (!upstream.ok || !upstream.body) {
+      const text = await upstream.text().catch(() => '');
+      throw new Error(`Upstream failed: ${upstream.status} ${text}`);
+    }
+
+    res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+
+    upstream.body.on('data', chunk => res.write(chunk));
+    upstream.body.on('end', () => res.end());
+    upstream.body.on('error', () => res.end());
+  } catch (e) {
+    try {
+      res.status(500).end(`data: {"error":"${String(e.message || e)}"}\n\n`);
+    } catch {}
+  }
+});
+
 app.get('/api/health', (_, res) => res.json({ ok: true }));
 
 // 根路径服务主页
