@@ -3,9 +3,7 @@ import ReactFlow, {
   addEdge,
   Background,
   Connection,
-  Controls,
   Edge,
-  MiniMap,
   Node,
   useEdgesState,
   useNodesState,
@@ -500,39 +498,16 @@ export default function App() {
 
   const chatInterface = useMemo(() => (
     <div className="chat-container">
-      <div className="chat-header">
-        <button onClick={async () => {
-          // seed some sample docs
-          await api('/api/knowledge/upsert', {
-            documents: [
-              { text: '混合检索通常指将稀疏检索与向量检索结合使用，以获得更好的召回与精度。' },
-              { text: 'RAG（检索增强生成）通过在生成前检索相关知识，为回答提供事实依据。' }
-            ]
-          })
-          alert('示例知识已导入')
-        }}>导入示例知识</button>
-        <button 
-          onClick={() => {
-            if (chatHistory.length > 0 && confirm('确定要清除所有聊天记录吗？')) {
-              setChatHistory([])
-            }
-          }}
-          disabled={chatHistory.length === 0}
-          style={{ 
-            marginLeft: '8px',
-            backgroundColor: chatHistory.length === 0 ? '#f3f4f6' : '#ef4444',
-            color: chatHistory.length === 0 ? '#9ca3af' : 'white',
-            border: 'none',
-            padding: '8px 16px',
-            borderRadius: '6px',
-            cursor: chatHistory.length === 0 ? 'not-allowed' : 'pointer'
-          }}
-        >
-          清除记录
-        </button>
-      </div>
       
       <div className="chat-messages">
+        {loading && (
+          <div className="chat-loading">
+            <div className="chat-avatar">🤖</div>
+            <div className="chat-content">
+              <div className="chat-text">正在思考中...</div>
+            </div>
+          </div>
+        )}
         {chatHistory.length === 0 ? (
           <div className="chat-empty">
             <div className="chat-empty-icon">💬</div>
@@ -557,14 +532,6 @@ export default function App() {
               </div>
             </div>
           ))
-        )}
-        {loading && (
-          <div className="chat-loading">
-            <div className="chat-avatar">🤖</div>
-            <div className="chat-content">
-              <div className="chat-text">正在思考中...</div>
-            </div>
-          </div>
         )}
       </div>
       
@@ -724,32 +691,6 @@ export default function App() {
           <label>TopK：
             <input type="number" value={cfg.topK}
               onChange={(e) => setNodes((ns) => ns.map(n => n.id === selected.id ? { ...n, data: { ...n.data, config: { ...cfg, topK: Number(e.target.value) } } } : n))} />
-          </label>
-          <label>上传文本（自动分块并向量化）：
-            <textarea placeholder="在此粘贴文本..." onBlur={async (e) => {
-              const content = e.target.value.trim()
-              if (!content) return
-              await fetch('/api/vector/upload', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text: content }) })
-              alert('文本已导入知识库')
-              e.target.value = ''
-            }} />
-          </label>
-          <label>上传文件（.txt）：
-            <div className="file-upload">
-              <input id="kb-file" className="file-input" type="file" accept=".txt" onChange={async (e) => {
-                if (!e.target.files || !e.target.files[0]) return
-                const file = e.target.files[0]
-                const form = new FormData()
-                form.append('file', file)
-                await fetch('/api/vector/upload', { method: 'POST', body: form })
-                const nameEl = document.getElementById('kb-file-name')
-                if (nameEl) nameEl.textContent = file.name + ' 已导入'
-                alert('文件已导入知识库')
-                e.target.value = ''
-              }} />
-              <label htmlFor="kb-file" className="file-btn">选择文件</label>
-              <span id="kb-file-name" className="file-name">未选择文件</span>
-            </div>
           </label>
         </div>
       )
@@ -990,8 +931,6 @@ export default function App() {
           fitView
         >
           <Background gap={18} size={1} color="#e5e7eb" />
-          <MiniMap />
-          <Controls />
         </ReactFlow>
         </div>
       </div>
@@ -1015,8 +954,27 @@ export default function App() {
               }}
             >配置</button>
           </div>
+          <button 
+            onClick={() => {
+              if (chatHistory.length > 0 && confirm('确定要清除所有聊天记录吗？')) {
+                setChatHistory([])
+              }
+            }}
+            disabled={chatHistory.length === 0}
+            style={{ 
+              backgroundColor: chatHistory.length === 0 ? '#f3f4f6' : '#8b5cf6',
+              color: chatHistory.length === 0 ? '#9ca3af' : 'white',
+              border: 'none',
+              padding: '8px 16px',
+              borderRadius: '6px',
+              cursor: chatHistory.length === 0 ? 'not-allowed' : 'pointer',
+              marginLeft: 'auto'
+            }}
+          >
+            清除记录
+          </button>
         </div>
-        <div style={{padding: '12px'}}>
+        <div style={{ padding: '12px', overflowY: 'auto', minHeight: 0 }}>
           {previewOpen && chatInterface}
           {configOpen && rightPanel}
         </div>

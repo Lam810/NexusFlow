@@ -67,11 +67,9 @@ cd client && npm run dev
 
 ### 1. 导入知识
 
-- 在聊天界面点击 **导入示例知识**，添加两条样例文档（自动嵌入并存入内存库）。
 - 上传自定义知识：
   - 在知识检索节点配置面板：粘贴文本或上传 .txt 文件（自动分块向量化）。
   - 向量数据库 API: POST /api/vector/upload (multipart form, file 或 text)
-  - 内存知识库 API: POST /api/knowledge/upload (multipart form, file 或 text) 或 /api/knowledge/upsert (JSON documents)
 
 ### 2. 构建工作流
 
@@ -131,7 +129,6 @@ cd client && npm run dev
   - `package.json`: 依赖 (express, cors, multer, node-fetch, dotenv, better-sqlite3)，脚本: `npm run dev` (nodemon)。
   - `src/index.js`: 主服务器，路由:
     - `/api/vector/*`: 向量数据库管理 (上传/搜索/文件管理/统计)。
-    - `/api/knowledge/*`: 内存知识库 (向后兼容)。
     - `/api/chat`: LLM 调用 (Qwen/OpenAI 兼容)。
     - `/api/http-request`: 代理 HTTP (变量替换)。
     - `/api/health`: 健康检查。
@@ -150,11 +147,6 @@ cd client && npm run dev
 - **GET /api/vector/documents**: → { documents: [{id, filename, chunk_index, chunk_text, ...}] }
 - **GET /api/vector/stats**: → { stats: {totalDocuments, totalFiles, totalSize} }
 
-### 内存知识库 API (向后兼容)
-- **POST /api/knowledge/search**: { query, topK } → { matches: [{id, text, score}] }
-- **POST /api/knowledge/upload**: multipart (file) 或 { text } → { inserted, total }
-- **POST /api/knowledge/upsert**: { documents: [{id?, text}] } → { ok, results }
-
 ### 其他 API
 - **POST /api/chat**: { messages, model, temperature, apiKey?, apiUrl?, provider } → OpenAI 格式响应。
 - **POST /api/http-request**: { method, url, headers, body, variables } → { status_code, content, json }
@@ -165,7 +157,7 @@ cd client && npm run dev
 ## 开发与自定义
 
 - **添加节点**: 在 App.tsx 的 createNewNode 函数扩展类型/配置。
-- **扩展后端**: index.js 添加新路由 (e.g., 持久化 KB 到文件/DB)。
+- **扩展后端**: index.js 添加新路由 (e.g., 更多数据库集成)。
 - **样式**: 修改 styles.css 自定义节点主题 (theme-blue 等)。
 - **环境**: 前端 LLM 配置可覆盖后端 .env (per-node API key)。
 

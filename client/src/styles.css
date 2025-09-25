@@ -1,6 +1,6 @@
-html, body, #root { height: 100%; margin: 0; font-family: ui-sans-serif, system-ui, Arial; background: #f7f7fb; color: #0f172a; }
-.app { display: grid; grid-template-columns: 2fr 1fr; height: 100%; }
-.left { display: grid; grid-template-rows: auto 1fr; border-right: 1px solid #eee; }
+html, body, #root { height: 100%; margin: 0; font-family: ui-sans-serif, system-ui, Arial; background: #f7f7fb; color: #0f172a; overflow: hidden; }
+.app { display: grid; grid-template-columns: 2fr 1fr; height: 100vh; overflow: hidden; }
+.left { display: grid; grid-template-rows: auto 1fr; border-right: 1px solid #eee; height: 100vh; overflow: hidden; position: relative; z-index: 2; }
 .canvas-header { padding: 12px; background: linear-gradient(180deg,#f8fafc,#ffffff); border-bottom: 1px solid #e5e7eb; }
 .new-node-container { position: relative; }
 .new-node-btn { padding: 8px 16px; background: linear-gradient(180deg,#8b5cf6,#7c3aed); color: white; border: none; border-radius: 8px; cursor: pointer; font-weight: 600; box-shadow: 0 2px 6px rgba(139,92,246,.3); }
@@ -11,8 +11,9 @@ html, body, #root { height: 100%; margin: 0; font-family: ui-sans-serif, system-
 .new-node-menu button:hover { background: #f8fafc; }
 .delete-node-btn { margin-left: 10px; padding: 8px 12px; border: 1px solid #fecaca; background: linear-gradient(180deg,#fee2e2,#fff); color: #991b1b; border-radius: 8px; cursor: pointer; }
 .delete-node-btn:disabled { opacity: .5; cursor: not-allowed; }
-.right { display: grid; grid-template-rows: auto 1fr; background: linear-gradient(180deg,#ffffff, #fafafe); }
-.right-header { display:flex; align-items:center; justify-content: flex-end; padding: 12px; border-bottom: 1px solid #eee; background: linear-gradient(180deg,#f8fafc,#ffffff); position: sticky; top: 0; z-index: 2; }
+.right { display: grid; grid-template-rows: auto 1fr; background: linear-gradient(180deg,#ffffff, #fafafe); height: 100vh; position: relative; z-index: 1; overflow: hidden; }
+.right > div:last-child { overflow-y: auto; min-height: 0; }
+.right-header { display:flex; align-items:center; justify-content: flex-end; padding: 12px; border-bottom: 1px solid #eee; background: linear-gradient(180deg,#f8fafc,#ffffff); position: sticky; top: 0; z-index: 1; }
 .tabs { display:flex; gap:8px; }
 .fixed-tabs { position: static; }
 .tab { padding:8px 12px; border:1px solid #e5e7eb; background:#fff; border-radius:999px; cursor:pointer; color:#475569; }

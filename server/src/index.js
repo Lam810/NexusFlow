@@ -16,18 +16,6 @@ const upload = multer({ dest: 'uploads/' });
 // 初始化向量数据库
 const vectorDB = new VectorDB();
 
-// 为了向后兼容，保留内存知识库
-const knowledgeBase = [];
-const KNOWLEDGEBASE_MAX_ITEMS = 2000; // 防止内存无限增长
-
-function addToKnowledgeBase(record) {
-  knowledgeBase.push(record);
-  if (knowledgeBase.length > KNOWLEDGEBASE_MAX_ITEMS) {
-    // 移除最早的若干条，保持在上限以内
-    const overflow = knowledgeBase.length - KNOWLEDGEBASE_MAX_ITEMS;
-    knowledgeBase.splice(0, overflow);
-  }
-}
 
 const QWEN_BASE_URL = 'https://dashscope.aliyuncs.com/compatible-mode/v1';
 const QWEN_API_KEY = process.env.QWEN_API_KEY;
@@ -57,17 +45,6 @@ async function createEmbedding(input) {
   return json.data[0].embedding;
 }
 
-function cosineSimilarity(a, b) {
-  let dot = 0;
-  let na = 0;
-  let nb = 0;
-  for (let i = 0; i < a.length && i < b.length; i++) {
-    dot += a[i] * b[i];
-    na += a[i] * a[i];
-    nb += b[i] * b[i];
-  }
-  return dot / (Math.sqrt(na) * Math.sqrt(nb) + 1e-8);
-}
 
 function chunkText(text, chunkSize = 800, overlap = 100) {
   // 限制文本长度，避免内存问题
@@ -104,23 +81,6 @@ function chunkText(text, chunkSize = 800, overlap = 100) {
   return chunks.slice(0, 50);
 }
 
-app.post('/api/knowledge/upsert', async (req, res) => {
-  try {
-    const { documents } = req.body; // [{id?, text}]
-    const results = [];
-    for (const doc of documents) {
-      const id = doc.id || `${Date.now()}-${Math.random().toString(36).slice(2)}`;
-      const embedding = await createEmbedding(doc.text);
-      const record = { id, text: doc.text, embedding };
-      const idx = knowledgeBase.findIndex((d) => d.id === id);
-      if (idx >= 0) knowledgeBase[idx] = record; else addToKnowledgeBase(record);
-      results.push({ id });
-    }
-    res.json({ ok: true, results });
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
-});
 
 // 新的向量数据库上传端点
 app.post('/api/vector/upload', upload.single('file'), async (req, res) => {
@@ -184,8 +144,6 @@ app.post('/api/vector/upload', upload.single('file'), async (req, res) => {
           file_type: path.extname(originalFilename).slice(1) || 'txt'
         });
         
-        // 同时添加到内存知识库以保持兼容性
-        addToKnowledgeBase({ id: docId, text: chunk, embedding });
         
         results.push({ ok: true, chunkId: docId });
         successCount++;
@@ -209,51 +167,6 @@ app.post('/api/vector/upload', upload.single('file'), async (req, res) => {
   }
 });
 
-// 保持原有的内存知识库上传端点
-app.post('/api/knowledge/upload', upload.single('file'), async (req, res) => {
-  try {
-    const { text } = req.body; // optional
-    let rawText = text || '';
-    
-    if (req.file) {
-      // 限制文件大小
-      if (req.file.size > 500000) { // 500KB限制
-        return res.status(400).json({ error: 'File too large. Maximum size is 500KB.' });
-      }
-      const filePath = path.resolve(req.file.path);
-      rawText = fs.readFileSync(filePath, 'utf-8');
-      fs.unlinkSync(filePath);
-    }
-    
-    if (!rawText || !rawText.trim()) {
-      return res.status(400).json({ error: 'No text content provided' });
-    }
-    
-    const chunks = chunkText(rawText);
-    if (chunks.length === 0) {
-      return res.status(400).json({ error: 'No valid text chunks found' });
-    }
-    
-    const results = [];
-    let successCount = 0;
-    for (const c of chunks) {
-      try {
-        const embedding = await createEmbedding(c);
-        addToKnowledgeBase({ id: `${Date.now()}-${Math.random().toString(36).slice(2)}`, text: c, embedding });
-        results.push({ ok: true });
-        successCount++;
-      } catch (error) {
-        console.error('Failed to process chunk:', error);
-        results.push({ ok: false, error: error.message });
-      }
-    }
-    
-    res.json({ ok: true, inserted: successCount, total: chunks.length });
-  } catch (e) {
-    console.error('Upload error:', e);
-    res.status(500).json({ error: e.message });
-  }
-});
 
 // 向量数据库搜索端点
 app.post('/api/vector/search', async (req, res) => {
@@ -324,23 +237,6 @@ app.get('/api/vector/stats', (req, res) => {
   }
 });
 
-// 保持原有的内存知识库搜索端点
-app.post('/api/knowledge/search', async (req, res) => {
-  try {
-    const { query, topK = 3 } = req.body;
-    const qEmbedding = await createEmbedding(query);
-    const scored = knowledgeBase.map((d) => ({
-      id: d.id,
-      text: d.text,
-      score: cosineSimilarity(qEmbedding, d.embedding),
-    }))
-      .sort((a, b) => b.score - a.score)
-      .slice(0, topK);
-    res.json({ matches: scored });
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
-});
 
 app.post('/api/chat', async (req, res) => {
   try {
