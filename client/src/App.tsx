@@ -40,6 +40,11 @@ type HttpConfig = {
   bodyJson: string
   variables: Array<{key: string, value: string}>
 }
+type AnalysisConfig = {
+  apiUrl: string
+  apiKey?: string
+  questionTemplate: string
+}
 type CondClause = {
   variable: string
   operator: 'contains' | 'not_contains' | 'start_with' | 'end_with' | 'is' | 'is_not' | 'is_empty' | 'is_not_empty'
@@ -82,7 +87,7 @@ const initialNodes: Node[] = [
   { id: 'cond', type: 'card', position: { x: 180, y: 60 }, data: { label: '条件分支', icon: '🧩', theme: 'theme-cyan', handles: ['left','multiple'], config: { if: { variable: 'query', operator: 'contains', value: '技术' }, elifs: [], elseEnabled: true } as CondConfig } },
   { id: 'kb', type: 'card', position: { x: 300, y: 30 }, data: { label: '知识检索', icon: '📚', theme: 'theme-green', handles: ['left','right'], config: { topK: 3 } as KbConfig } },
   { id: 'llm', type: 'card', position: { x: 550, y: 30 }, data: { label: 'LLM', icon: '🤖', theme: 'theme-purple', handles: ['left','right'], config: { model: 'qwen-plus', temperature: 0.7, systemPrompt: '你是一个有用的中文助手。回答时要基于提供的知识片段，若无依据要明确说明。', userPrompt: '用户问题：{{query}}\n\n知识片段：\n{{kb_text}}' } as LlmConfig } },
-  { id: 'reply', type: 'card', position: { x: 800, y: 30 }, data: { label: '直接回复', icon: '🟠', theme: 'theme-orange', handles: ['left'], config: { mode: 'llm', template: '{{llm_text}}' } as AnswerConfig } },
+  { id: 'reply', type: 'card', position: { x: 800, y: 30 }, data: { label: '直接回复', icon: '🟠', theme: 'theme-orange', handles: ['left'], config: { mode: 'template', template: '{{llm_text}}' } as AnswerConfig } },
   { id: 'reply-else', type: 'card', position: { x: 300, y: 120 }, data: { label: '直接回复', icon: '🟠', theme: 'theme-orange', handles: ['left'], config: { mode: 'template', template: '这是 ELSE 分支：{{query}}' } as AnswerConfig } },
 ]
 
@@ -115,6 +120,34 @@ function renderTemplate(tpl: string, vars: Record<string, any>): string {
     if (Array.isArray(val)) return val.join('\n')
     return val == null ? '' : String(val)
   })
+}
+
+// 轻量 Markdown 渲染（支持标题、加粗、列表、代码块、换行等）
+function renderMarkdownToHtml(md: string): string {
+  if (!md) return ''
+  // 先转义HTML
+  const escapeHtml = (s: string) => s
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+  let text = escapeHtml(md)
+  // 代码块 ```
+  text = text.replace(/```([\s\S]*?)```/g, (_m, code) => `<pre><code>${code.replace(/\n/g,'<br/>')}</code></pre>`)
+  // 粗体 **text**
+  text = text.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+  // 斜体 *text*
+  text = text.replace(/\*([^*]+)\*/g, '<em>$1</em>')
+  // 标题 #, ##, ###（行首）
+  text = text.replace(/^###\s+(.+)$/gm, '<h3>$1</h3>')
+             .replace(/^##\s+(.+)$/gm, '<h2>$1</h2>')
+             .replace(/^#\s+(.+)$/gm, '<h1>$1</h1>')
+  // 无序列表 - item 或 * item
+  text = text.replace(/(^|\n)(?:\-|\*)\s+(.+)(?=\n|$)/g, (_m, p1, item) => `${p1}<li>${item}</li>`) // 单个 li
+  // 将连续的 <li> 组装为 <ul>
+  text = text.replace(/(?:<li>[\s\S]*?<\/li>\n?)+/g, (m) => `<ul>${m.replace(/\n/g,'')}</ul>`)
+  // 换行
+  text = text.replace(/\n/g, '<br/>')
+  return text
 }
 
 async function runFlow(
@@ -220,6 +253,15 @@ async function runFlow(
       }
     }
     
+    if (nodeType === 'analysis') {
+      const cfg = (node.data?.config || { apiUrl: '', apiKey: '', questionTemplate: '请对以下数据进行分析：{{query}}' }) as AnalysisConfig
+      const question = renderTemplate(cfg.questionTemplate || '{{query}}', ctx.variables)
+      const result = await api('/api/analysis', { apiUrl: cfg.apiUrl, apiKey: cfg.apiKey, question })
+      const text = result?.text || JSON.stringify(result)
+      ctx.variables.analysis_text = text
+      if (onOutput) onOutput(nodeId, text)
+    }
+    
     if (nodeType === 'llm') {
       const cfg = (node.data?.config || {}) as LlmConfig
       const user = renderTemplate(cfg.userPrompt || '{{query}}', ctx.variables)
@@ -250,12 +292,9 @@ async function runFlow(
     }
     
     if (nodeType === 'reply') {
-      const cfg = (node.data?.config || { mode: 'llm', template: '{{llm_text}}' }) as AnswerConfig
-      if (cfg.mode === 'template') {
-        ctx.variables.answer = renderTemplate(cfg.template, ctx.variables)
-      } else {
-        ctx.variables.answer = ctx.llmText || ''
-      }
+      const cfg = (node.data?.config || { mode: 'template', template: '{{llm_text}}' }) as AnswerConfig
+      // 统一模板渲染
+      ctx.variables.answer = renderTemplate(cfg.template, ctx.variables)
       if (onOutput) onOutput(nodeId, String(ctx.variables.answer || ''))
     }
     
@@ -357,7 +396,7 @@ export default function App() {
     }
   }
 
-  const createNewNode = (type: 'kb' | 'llm' | 'reply' | 'http' | 'cond') => {
+  const createNewNode = (type: 'kb' | 'llm' | 'reply' | 'http' | 'cond' | 'analysis') => {
     const id = `${type}-${Date.now()}`
     const baseX = 200 + (nodes.length * 150)
     const baseY = 100 + (Math.random() * 100)
@@ -436,6 +475,20 @@ export default function App() {
           }
         }
         break
+      case 'analysis':
+        newNode = {
+          id,
+          type: 'card',
+          position: { x: baseX, y: baseY },
+          data: {
+            label: '数据分析',
+            icon: '📊',
+            theme: 'theme-blue',
+            handles: ['left', 'right'],
+            config: { apiUrl: '', apiKey: '', questionTemplate: '请对以下问题进行数据分析：{{query}}' } as AnalysisConfig
+          }
+        }
+        break
       case 'cond':
         newNode = {
           id,
@@ -500,38 +553,50 @@ export default function App() {
     <div className="chat-container">
       
       <div className="chat-messages">
-        {loading && (
-          <div className="chat-loading">
-            <div className="chat-avatar">🤖</div>
-            <div className="chat-content">
-              <div className="chat-text">正在思考中...</div>
-            </div>
-          </div>
-        )}
         {chatHistory.length === 0 ? (
-          <div className="chat-empty">
-            <div className="chat-empty-icon">💬</div>
-            <div className="chat-empty-text">开始对话吧！</div>
-          </div>
-        ) : (
-          chatHistory.map((chat) => (
-            <div key={chat.id} className="chat-item">
-              <div className="chat-question">
-                <div className="chat-avatar">👤</div>
-                <div className="chat-content">
-                  <div className="chat-text">{chat.question}</div>
-                  <div className="chat-time">{new Date(chat.timestamp).toLocaleTimeString()}</div>
-                </div>
-              </div>
-              <div className="chat-answer">
+          <>
+            {loading && (
+              <div className="chat-loading">
                 <div className="chat-avatar">🤖</div>
                 <div className="chat-content">
-                  <div className="chat-text">{chat.answer}</div>
-                  <div className="chat-time">{new Date(chat.timestamp).toLocaleTimeString()}</div>
+                  <div className="chat-text">正在思考中...</div>
                 </div>
               </div>
+            )}
+            <div className="chat-empty">
+              <div className="chat-empty-icon">💬</div>
+              <div className="chat-empty-text">开始对话吧！</div>
             </div>
-          ))
+          </>
+        ) : (
+          <>
+            {chatHistory.map((chat) => (
+              <div key={chat.id} className="chat-item">
+                <div className="chat-question">
+                  <div className="chat-avatar">👤</div>
+                  <div className="chat-content">
+                    <div className="chat-text">{chat.question}</div>
+                    <div className="chat-time">{new Date(chat.timestamp).toLocaleTimeString()}</div>
+                  </div>
+                </div>
+                <div className="chat-answer">
+                  <div className="chat-avatar">🤖</div>
+                  <div className="chat-content">
+                    <div className="chat-text" dangerouslySetInnerHTML={{ __html: renderMarkdownToHtml(String(chat.answer || '')) }} />
+                    <div className="chat-time">{new Date(chat.timestamp).toLocaleTimeString()}</div>
+                  </div>
+                </div>
+              </div>
+            ))}
+            {loading && (
+              <div className="chat-loading">
+                <div className="chat-avatar">🤖</div>
+                <div className="chat-content">
+                  <div className="chat-text">正在思考中...</div>
+                </div>
+              </div>
+            )}
+          </>
         )}
       </div>
       
@@ -768,7 +833,7 @@ export default function App() {
       )
     }
     if (nodeType === 'reply') {
-      const cfg: AnswerConfig = selected.data?.config || { mode: 'llm', template: '{{llm_text}}' }
+      const cfg: AnswerConfig = selected.data?.config || { mode: 'template', template: '{{llm_text}}' }
       return (
         <div className="panel">
           <div className="panel-title">直接回复配置</div>
@@ -787,13 +852,7 @@ export default function App() {
           }}>
             <strong>节点 ID:</strong> {selected.id}
           </div>
-          <label>模式：
-            <select value={cfg.mode} onChange={(e) => setNodes((ns) => ns.map(n => n.id === selected.id ? { ...n, data: { ...n.data, config: { ...cfg, mode: e.target.value as any } } } : n))}>
-              <option value="llm">使用 LLM 输出</option>
-              <option value="template">模板渲染</option>
-            </select>
-          </label>
-          <label>模板（可用变量：{'{{llm_text}}'}、{'{{llm_text_节点ID}}'}、{'{{kb_text}}'}、{'{{query}}'}、{'{{http_text}}'}）：</label>
+          <label>模板（可用变量：{'{{llm_text}}'}、{'{{llm_text_节点ID}}'}、{'{{kb_text}}'}、{'{{query}}'}、{'{{http_text}}'}、{'{{analysis_text}}'}）：</label>
           <textarea value={cfg.template}
             onChange={(e) => setNodes((ns) => ns.map(n => n.id === selected.id ? { ...n, data: { ...n.data, config: { ...cfg, template: e.target.value } } } : n))} />
         </div>
@@ -858,6 +917,42 @@ export default function App() {
         </div>
       )
     }
+    if (nodeType === 'analysis') {
+      const cfg: AnalysisConfig = selected.data?.config || { apiUrl: '', apiKey: '', questionTemplate: '请对以下问题进行数据分析：{{query}}' }
+      return (
+        <div className="panel">
+          <div className="panel-title">数据分析配置</div>
+          {selected.data?.lastOutput && (
+            <label>上次输出：
+              <textarea readOnly value={selected.data.lastOutput} />
+            </label>
+          )}
+          <div style={{ 
+            backgroundColor: '#f3f4f6', 
+            padding: '8px', 
+            borderRadius: '4px', 
+            marginBottom: '16px',
+            fontSize: '12px',
+            color: '#6b7280'
+          }}>
+            <strong>节点 ID:</strong> {selected.id}
+          </div>
+          <label>分析服务 API URL：
+            <input value={cfg.apiUrl}
+              onChange={(e) => setNodes((ns) => ns.map(n => n.id === selected.id ? { ...n, data: { ...n.data, config: { ...(selected.data?.config || {}), apiUrl: e.target.value } } } : n))} />
+          </label>
+          <label>API Key（可选）：
+            <input type="password" value={cfg.apiKey || ''}
+              onChange={(e) => setNodes((ns) => ns.map(n => n.id === selected.id ? { ...n, data: { ...n.data, config: { ...(selected.data?.config || {}), apiKey: e.target.value } } } : n))} />
+          </label>
+          <label>问题模板：
+            <textarea value={cfg.questionTemplate}
+              onChange={(e) => setNodes((ns) => ns.map(n => n.id === selected.id ? { ...n, data: { ...n.data, config: { ...(selected.data?.config || {}), questionTemplate: e.target.value } } } : n))} />
+          </label>
+          <div style={{marginTop:8, fontSize:12, color:'#64748b'}}>可用变量：{'{{query}}'}、{'{{kb_text}}'}、{'{{http_text}}'}、{'{{llm_text_其他节点ID}}'}</div>
+        </div>
+      )
+    }
     return null
   }, [selected, setNodes])
 
@@ -877,7 +972,8 @@ export default function App() {
                 <button onClick={() => createNewNode('kb')}>📚 知识检索</button>
                 <button onClick={() => createNewNode('cond')}>🧩 条件分支</button>
                 <button onClick={() => createNewNode('llm')}>🤖 LLM</button>
-                <button onClick={() => createNewNode('http')}>🌐 HTTP请求</button>
+            <button onClick={() => createNewNode('http')}>🌐 HTTP请求</button>
+            <button onClick={() => createNewNode('analysis')}>📊 数据分析</button>
                 <button onClick={() => createNewNode('reply')}>🟠 直接回复</button>
               </div>
             )}

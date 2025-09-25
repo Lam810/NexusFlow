@@ -361,6 +361,48 @@ app.post('/api/http-request', async (req, res) => {
   }
 });
 
+// 简易数据分析代理：将问题转发到任意分析服务（示例：将其发送到 LLM 做数据理解）
+app.post('/api/analysis', async (req, res) => {
+  try {
+    const { apiUrl, apiKey, question } = req.body
+    if (!apiUrl) {
+      // 退化为使用 chat 端点做一次简单分析
+      if (!QWEN_API_KEY) {
+        // 无可用 API，直接返回演示结果，避免外部请求导致连接中断
+        return res.json({ text: `分析任务已接收：${String(question || '')}\n(未配置外部分析服务，返回示例结果)` })
+      }
+      const r = await fetch(`${QWEN_BASE_URL}/chat/completions`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${QWEN_API_KEY}`,
+        },
+        body: JSON.stringify({
+          model: 'qwen-plus',
+          messages: [{ role: 'user', content: `请基于你的数据知识，对以下问题进行数据分析与可视化建议：${question}` }],
+          temperature: 0.4
+        })
+      })
+      let j
+      try { j = await r.json() } catch { j = null }
+      const text = j?.choices?.[0]?.message?.content || `分析完成（状态：${r.status}）`
+      return res.json({ text })
+    }
+    const headers = { 'Content-Type': 'application/json' }
+    if (apiKey) headers['Authorization'] = `Bearer ${apiKey}`
+    const r = await fetch(apiUrl, { method: 'POST', headers, body: JSON.stringify({ question }) })
+    const text = await r.text()
+    let json = null
+    try { json = JSON.parse(text) } catch {}
+    res.json(json || { text })
+  } catch (e) {
+    // 避免连接被重置，确保返回 JSON
+    try {
+      res.status(500).json({ error: e.message })
+    } catch {}
+  }
+})
+
 app.get('/api/health', (_, res) => res.json({ ok: true }));
 
 // 根路径服务主页

@@ -1,6 +1,6 @@
 # AI-Flow: 高度自定义的 AI 工作流构建器
 
-AI-Flow 是一个类似 Dify 的最小化工作流工具，使用 React Flow 实现可视化节点编辑器，前端基于 React + Vite，后端基于 Express.js。支持知识检索（RAG）、LLM 对话、条件分支、HTTP 请求等节点，构建复杂 AI 管道。
+AI-Flow 是一个最小化工作流工具，使用 React Flow 实现可视化节点编辑器，前端基于 React + Vite，后端基于 Express.js。支持知识检索（RAG）、LLM 对话、条件分支、HTTP 请求等节点，构建复杂 AI 管道。
 
 ## 特性
 
