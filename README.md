@@ -5,13 +5,13 @@ AI-Flow 是一个类似 Dify 的最小化工作流工具，使用 React Flow 实
 ## 特性
 
 - **可视化工作流**: 使用 React Flow 拖拽节点、连接边，构建自定义 AI 流程。
-- **知识库管理**: 在内存中存储文本嵌入（使用 Qwen text-embedding-v3），支持文件/文本上传、余弦相似度检索。
+- **知识库管理**: 使用 SQLite3 持久化存储文本嵌入（使用 Qwen text-embedding-v3），支持文件/文本上传、余弦相似度检索、文件管理。
 - **LLM 集成**: 支持 Qwen（阿里云百炼）和 OpenAI 兼容的聊天完成，模板化提示词。
 - **条件分支**: 基于变量的 if/elif/else 逻辑，支持多种运算符（包含、等于、空值等）。
 - **HTTP 请求**: 代理外部 API 调用，支持变量替换、JSON/文本 body。
 - **直接回复**: 使用 LLM 输出或模板渲染最终答案。
 - **聊天界面**: 运行工作流后显示历史对话，支持导入示例知识。
-- **内存优化**: 知识库上限 2000 条，文本分块（800 字符，100 重叠），文件大小限 500KB。
+- **持久化存储**: SQLite3 数据库存储向量嵌入，支持文件管理、统计查询，文本分块（800 字符，100 重叠），文件大小限 500KB。
 
 ## 快速开始
 
@@ -33,7 +33,7 @@ AI-Flow 是一个类似 Dify 的最小化工作流工具，使用 React Flow 实
 
 ```bash
 # 克隆项目（假设已存在）
-cd TestData/zeteng/AI-Flow/try
+cd AI-Flow
 
 # 安装后端依赖
 cd server && npm install && cd ..
@@ -47,13 +47,13 @@ cd client && npm install && cd ..
 - 复制 `server/.env.example` 为 `server/.env`（如果不存在，创建并添加）：
   ```
   QWEN_API_KEY=sk-your-api-key-here
+  PORT=5757
   ```
-- 默认使用提供的 key: `sk-a14dcee56184459d9d5eab7a65af3f3f`（生产环境请替换为自己的）。
 
 ### 启动服务
 
 ```bash
-# 终端 1: 启动后端 (端口 8787)
+# 终端 1: 启动后端 (端口 5757)
 cd server && npm run dev
 
 # 终端 2: 启动前端 (端口 5173)
@@ -61,7 +61,7 @@ cd client && npm run dev
 ```
 
 - 前端: http://localhost:5173
-- 后端: http://localhost:8787 (健康检查: GET /api/health)
+- 后端: http://localhost:5757 (健康检查: GET /api/health)
 
 ## 使用指南
 
@@ -70,7 +70,8 @@ cd client && npm run dev
 - 在聊天界面点击 **导入示例知识**，添加两条样例文档（自动嵌入并存入内存库）。
 - 上传自定义知识：
   - 在知识检索节点配置面板：粘贴文本或上传 .txt 文件（自动分块向量化）。
-  - API: POST /api/knowledge/upload (multipart form, file 或 text) 或 /api/knowledge/upsert (JSON documents)。
+  - 向量数据库 API: POST /api/vector/upload (multipart form, file 或 text)
+  - 内存知识库 API: POST /api/knowledge/upload (multipart form, file 或 text) 或 /api/knowledge/upsert (JSON documents)
 
 ### 2. 构建工作流
 
@@ -127,20 +128,37 @@ cd client && npm run dev
   - `_1 后缀文件`: 备份版本 (e.g., package_1.json)，可忽略。
 
 - **server/**: Express 后端。
-  - `package.json`: 依赖 (express, cors, multer, node-fetch, dotenv)，脚本: `npm run dev` (nodemon)。
+  - `package.json`: 依赖 (express, cors, multer, node-fetch, dotenv, better-sqlite3)，脚本: `npm run dev` (nodemon)。
   - `src/index.js`: 主服务器，路由:
-    - `/api/knowledge/*`: 上传/搜索/upsert (嵌入 + 余弦相似度)。
+    - `/api/vector/*`: 向量数据库管理 (上传/搜索/文件管理/统计)。
+    - `/api/knowledge/*`: 内存知识库 (向后兼容)。
     - `/api/chat`: LLM 调用 (Qwen/OpenAI 兼容)。
     - `/api/http-request`: 代理 HTTP (变量替换)。
     - `/api/health`: 健康检查。
+  - `src/vectorDB.js`: SQLite3 向量数据库类，支持文档存储、相似性搜索。
+  - `vector_knowledge.db`: SQLite3 数据库文件 (自动创建)。
   - `uploads/`: 临时文件目录 (multer)。
 
 ## API 参考
 
+### 向量数据库 API
+- **POST /api/vector/upload**: multipart (file) 或 { text, filename } → { ok, fileId, filename, inserted, total, results }
+- **POST /api/vector/search**: { query, topK } → { matches: [{id, text, similarity}] }
+- **GET /api/vector/files**: → { files: [{id, filename, file_size, file_type, chunk_count, created_at}] }
+- **GET /api/vector/files/:filename**: → { documents: [{id, filename, chunk_index, chunk_text, ...}] }
+- **DELETE /api/vector/files/:filename**: → { ok, filename, docsDeleted, fileDeleted }
+- **GET /api/vector/documents**: → { documents: [{id, filename, chunk_index, chunk_text, ...}] }
+- **GET /api/vector/stats**: → { stats: {totalDocuments, totalFiles, totalSize} }
+
+### 内存知识库 API (向后兼容)
 - **POST /api/knowledge/search**: { query, topK } → { matches: [{id, text, score}] }
 - **POST /api/knowledge/upload**: multipart (file) 或 { text } → { inserted, total }
+- **POST /api/knowledge/upsert**: { documents: [{id?, text}] } → { ok, results }
+
+### 其他 API
 - **POST /api/chat**: { messages, model, temperature, apiKey?, apiUrl?, provider } → OpenAI 格式响应。
 - **POST /api/http-request**: { method, url, headers, body, variables } → { status_code, content, json }
+- **GET /api/health**: → { ok: true }
 
 所有 API 使用 POST，JSON body，CORS 启用。
 
@@ -155,15 +173,18 @@ cd client && npm run dev
 
 - **API Key 无效**: 检查 Qwen 控制台配额，确保兼容模式启用。
 - **嵌入失败**: 文本过长? 自动分块；文件 >500KB 拒绝。
-- **内存溢出**: KB 自动限 2000 条，老条移除。
+- **数据库连接错误**: 确保 SQLite3 数据库文件权限正确，better-sqlite3 依赖已安装。
+- **向量搜索无结果**: 检查是否已上传文档到向量数据库，使用 `/api/vector/stats` 查看统计信息。
 - **跨域错误**: 确保前端代理或 CORS 配置正确 (默认启用)。
 - **节点不执行**: 检查边连接；条件分支需匹配 sourceHandle (if/else)。
+- **端口冲突**: 确保后端运行在 5757 端口，前端代理配置正确。
 
 ## 参考与贡献
 
 - **Qwen API**: [阿里云百炼文档](https://bailian.console.aliyun.com/#/api) (OpenAI 兼容 + 嵌入)。
 - **React Flow**: [文档](https://reactflow.dev/) 用于高级节点/边自定义。
-- **依赖**: 前端 ~200MB node_modules；后端轻量。
-- 欢迎 PR！焦点：持久化 KB、更多节点 (e.g., 数据库集成)、流式响应。
+- **依赖**: 前端 ~200MB node_modules；后端轻量，SQLite3 数据库文件自动创建。
+- **SQLite3**: 使用 better-sqlite3 提供高性能本地数据库存储。
+- 欢迎 PR！焦点：更多节点类型 (e.g., 数据库集成)、流式响应、向量索引优化。
 
 项目灵感来源于 Dify/RAG 工具，目标是轻量、可扩展的本地 AI 工作流。

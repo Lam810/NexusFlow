@@ -13,7 +13,7 @@ import ReactFlow, {
   Position,
 } from 'reactflow'
 
-type KnowledgeMatch = { id: string; text: string; score: number }
+type KnowledgeMatch = { id: string; text: string; score?: number; similarity?: number }
 
 type RunContext = {
   query: string
@@ -30,7 +30,7 @@ type LlmConfig = {
   userPrompt: string
   apiKey: string
   apiUrl: string
-  provider?: 'qwen' | 'openai'
+  provider?: 'qwen' | 'openai' | 'local'
 }
 type AnswerConfig = { mode: 'llm' | 'template'; template: string }
 type HttpConfig = {
@@ -192,10 +192,10 @@ async function runFlow(
     }
     if (nodeType === 'kb') {
       const cfg = (node.data?.config || { topK: 3 }) as KbConfig
-      const search = await api('/api/knowledge/search', { query, topK: cfg.topK })
+      const search = await api('/api/vector/search', { query, topK: cfg.topK })
       ctx.knowledgeMatches = search.matches
       ctx.variables.kb = { result: search.matches }
-      ctx.variables.kb_text = (search.matches as KnowledgeMatch[]).map((m) => `【得分${m.score.toFixed(2)}】${m.text}`).join('\n')
+      ctx.variables.kb_text = (search.matches as KnowledgeMatch[]).map((m) => `【得分${(m.score || m.similarity || 0).toFixed(2)}】${m.text}`).join('\n')
       if (onOutput) onOutput(nodeId, ctx.variables.kb_text)
     }
     
@@ -729,7 +729,7 @@ export default function App() {
             <textarea placeholder="在此粘贴文本..." onBlur={async (e) => {
               const content = e.target.value.trim()
               if (!content) return
-              await fetch('/api/knowledge/upload', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text: content }) })
+              await fetch('/api/vector/upload', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text: content }) })
               alert('文本已导入知识库')
               e.target.value = ''
             }} />
@@ -741,7 +741,7 @@ export default function App() {
                 const file = e.target.files[0]
                 const form = new FormData()
                 form.append('file', file)
-                await fetch('/api/knowledge/upload', { method: 'POST', body: form })
+                await fetch('/api/vector/upload', { method: 'POST', body: form })
                 const nameEl = document.getElementById('kb-file-name')
                 if (nameEl) nameEl.textContent = file.name + ' 已导入'
                 alert('文件已导入知识库')
@@ -777,12 +777,20 @@ export default function App() {
           </div>
           <label>API 类型：
             <select value={cfg.provider || 'qwen'} onChange={(e) => {
-              const provider = e.target.value as 'qwen' | 'openai'
-              const suggestedUrl = provider === 'qwen' ? 'https://dashscope.aliyuncs.com/compatible-mode/v1' : 'https://api.openai.com/v1'
-              setNodes((ns) => ns.map(n => n.id === selected.id ? { ...n, data: { ...n.data, config: { ...cfg, provider, apiUrl: cfg.apiUrl || suggestedUrl } } } : n))
+              const provider = e.target.value as 'qwen' | 'openai' | 'local'
+              let suggestedUrl = ''
+              if (provider === 'qwen') {
+                suggestedUrl = 'https://dashscope.aliyuncs.com/compatible-mode/v1'
+              } else if (provider === 'openai') {
+                suggestedUrl = 'https://api.openai.com/v1'
+              } else if (provider === 'local') {
+                suggestedUrl = 'http://192.168.137.4:8000/v1/chat/completions'
+              }
+              setNodes((ns) => ns.map(n => n.id === selected.id ? { ...n, data: { ...n.data, config: { ...cfg, provider, apiUrl: suggestedUrl } } } : n))
             }}>
               <option value="qwen">Qwen (OpenAI兼容)</option>
               <option value="openai">OpenAI</option>
+              <option value="local">本地模型</option>
             </select>
           </label>
           <label>API URL：
@@ -790,12 +798,20 @@ export default function App() {
               onChange={(e) => setNodes((ns) => ns.map(n => n.id === selected.id ? { ...n, data: { ...n.data, config: { ...cfg, apiUrl: e.target.value } } } : n))} />
           </label>
           <label>API Key：
-            <input type="password" value={cfg.apiKey || ''}
-              onChange={(e) => setNodes((ns) => ns.map(n => n.id === selected.id ? { ...n, data: { ...n.data, config: { ...cfg, apiKey: e.target.value } } } : n))} />
+            <input 
+              type="password" 
+              value={cfg.apiKey || ''}
+              placeholder={cfg.provider === 'local' ? '本地模型不需要API Key' : '请输入API Key'}
+              disabled={cfg.provider === 'local'}
+              onChange={(e) => setNodes((ns) => ns.map(n => n.id === selected.id ? { ...n, data: { ...n.data, config: { ...cfg, apiKey: e.target.value } } } : n))} 
+            />
           </label>
           <label>模型：
-            <input value={cfg.model}
-              onChange={(e) => setNodes((ns) => ns.map(n => n.id === selected.id ? { ...n, data: { ...n.data, config: { ...cfg, model: e.target.value } } } : n))} />
+            <input 
+              value={cfg.model}
+              placeholder={cfg.provider === 'local' ? 'local-model' : '请输入模型名称'}
+              onChange={(e) => setNodes((ns) => ns.map(n => n.id === selected.id ? { ...n, data: { ...n.data, config: { ...cfg, model: e.target.value } } } : n))} 
+            />
           </label>
           <label>温度：
             <input type="number" step="0.1" value={cfg.temperature}

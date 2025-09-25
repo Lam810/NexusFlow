@@ -1,0 +1,481 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>知识库数据库查看</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+
+        .container {
+            background: white;
+            border-radius: 20px;
+            box-shadow: 0 20px 40px rgba(0, 0, 0, 0.1);
+            padding: 40px;
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+
+        h1 {
+            text-align: center;
+            color: #333;
+            margin-bottom: 30px;
+            font-size: 2.5em;
+            font-weight: 300;
+        }
+
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 20px;
+            margin-bottom: 30px;
+        }
+
+        .stat-card {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 30px;
+            border-radius: 15px;
+            text-align: center;
+            box-shadow: 0 10px 20px rgba(102, 126, 234, 0.3);
+        }
+
+        .stat-number {
+            font-size: 2.5em;
+            font-weight: bold;
+            margin-bottom: 10px;
+        }
+
+        .stat-label {
+            font-size: 1.1em;
+            opacity: 0.9;
+        }
+
+        .tabs {
+            display: flex;
+            margin-bottom: 30px;
+            border-bottom: 2px solid #eee;
+        }
+
+        .tab {
+            padding: 15px 30px;
+            cursor: pointer;
+            border-bottom: 3px solid transparent;
+            transition: all 0.3s ease;
+            font-weight: 500;
+        }
+
+        .tab.active {
+            color: #667eea;
+            border-bottom-color: #667eea;
+        }
+
+        .tab:hover {
+            background-color: #f8f9ff;
+        }
+
+        .tab-content {
+            display: none;
+        }
+
+        .tab-content.active {
+            display: block;
+        }
+
+        .search-box {
+            width: 100%;
+            padding: 15px;
+            border: 2px solid #ddd;
+            border-radius: 10px;
+            font-size: 16px;
+            margin-bottom: 20px;
+            transition: border-color 0.3s ease;
+        }
+
+        .search-box:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+
+        .file-list, .document-list {
+            max-height: 500px;
+            overflow-y: auto;
+            border: 1px solid #eee;
+            border-radius: 10px;
+        }
+
+        .file-item, .document-item {
+            padding: 20px;
+            border-bottom: 1px solid #eee;
+            transition: background-color 0.3s ease;
+        }
+
+        .file-item:hover, .document-item:hover {
+            background-color: #f8f9ff;
+        }
+
+        .file-item:last-child, .document-item:last-child {
+            border-bottom: none;
+        }
+
+        .file-header, .document-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 10px;
+        }
+
+        .file-name, .document-id {
+            font-weight: bold;
+            color: #333;
+            font-size: 1.1em;
+        }
+
+        .file-size, .chunk-index {
+            color: #666;
+            font-size: 0.9em;
+        }
+
+        .file-meta, .document-meta {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            gap: 10px;
+            margin-bottom: 10px;
+            font-size: 0.9em;
+            color: #666;
+        }
+
+        .file-content, .document-content {
+            background-color: #f8f9fa;
+            padding: 15px;
+            border-radius: 8px;
+            font-family: 'Courier New', monospace;
+            font-size: 0.9em;
+            line-height: 1.5;
+            max-height: 150px;
+            overflow-y: auto;
+            white-space: pre-wrap;
+            word-break: break-word;
+        }
+
+        .btn {
+            background: #dc3545;
+            color: white;
+            border: none;
+            padding: 8px 16px;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 0.9em;
+            transition: all 0.3s ease;
+        }
+
+        .btn:hover {
+            background: #c82333;
+            transform: translateY(-1px);
+        }
+
+        .btn:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+            transform: none;
+        }
+
+        .loading {
+            text-align: center;
+            padding: 40px;
+            color: #666;
+            font-size: 1.1em;
+        }
+
+        .empty-state {
+            text-align: center;
+            padding: 60px 20px;
+            color: #999;
+        }
+
+        .empty-icon {
+            font-size: 4em;
+            margin-bottom: 20px;
+            opacity: 0.5;
+        }
+
+        .links {
+            text-align: center;
+            margin-top: 30px;
+            padding-top: 30px;
+            border-top: 1px solid #eee;
+        }
+
+        .links a {
+            color: #667eea;
+            text-decoration: none;
+            margin: 0 15px;
+            padding: 10px 20px;
+            border: 2px solid #667eea;
+            border-radius: 25px;
+            transition: all 0.3s ease;
+        }
+
+        .links a:hover {
+            background-color: #667eea;
+            color: white;
+        }
+
+        .refresh-btn {
+            background: #28a745;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 5px;
+            cursor: pointer;
+            margin-bottom: 20px;
+            transition: all 0.3s ease;
+        }
+
+        .refresh-btn:hover {
+            background: #218838;
+            transform: translateY(-1px);
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>📊 知识库数据库查看</h1>
+        
+        <div class="stats-grid">
+            <div class="stat-card">
+                <div class="stat-number" id="totalFiles">-</div>
+                <div class="stat-label">总文件数</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-number" id="totalDocs">-</div>
+                <div class="stat-label">总文档块</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-number" id="totalSize">-</div>
+                <div class="stat-label">总大小</div>
+            </div>
+        </div>
+
+        <div class="tabs">
+            <div class="tab active" onclick="switchTab('files')">📁 文件列表</div>
+            <div class="tab" onclick="switchTab('documents')">📄 文档块列表</div>
+        </div>
+
+        <div class="tab-content active" id="files-content">
+            <button class="refresh-btn" onclick="loadFiles()">🔄 刷新</button>
+            <input type="text" class="search-box" id="fileSearch" placeholder="搜索文件名..." onkeyup="filterFiles()">
+            <div class="file-list" id="fileList">
+                <div class="loading">加载中...</div>
+            </div>
+        </div>
+
+        <div class="tab-content" id="documents-content">
+            <button class="refresh-btn" onclick="loadDocuments()">🔄 刷新</button>
+            <input type="text" class="search-box" id="docSearch" placeholder="搜索文档内容..." onkeyup="filterDocuments()">
+            <div class="document-list" id="documentList">
+                <div class="loading">加载中...</div>
+            </div>
+        </div>
+
+        <div class="links">
+            <a href="/upload.html">📤 上传文件</a>
+            <a href="/search.html">🔍 搜索知识库</a>
+        </div>
+    </div>
+
+    <script>
+        let allFiles = [];
+        let allDocuments = [];
+
+        function switchTab(tabName) {
+            // 隐藏所有标签内容
+            document.querySelectorAll('.tab-content').forEach(content => {
+                content.classList.remove('active');
+            });
+            
+            // 移除所有标签的活动状态
+            document.querySelectorAll('.tab').forEach(tab => {
+                tab.classList.remove('active');
+            });
+            
+            // 显示选中的标签内容
+            document.getElementById(tabName + '-content').classList.add('active');
+            
+            // 设置标签为活动状态
+            event.target.classList.add('active');
+            
+            // 加载对应数据
+            if (tabName === 'files') {
+                loadFiles();
+            } else if (tabName === 'documents') {
+                loadDocuments();
+            }
+        }
+
+        async function loadStats() {
+            try {
+                const response = await fetch('/api/vector/stats');
+                const data = await response.json();
+                
+                if (data.stats) {
+                    document.getElementById('totalFiles').textContent = data.stats.totalFiles;
+                    document.getElementById('totalDocs').textContent = data.stats.totalDocuments;
+                    document.getElementById('totalSize').textContent = formatFileSize(data.stats.totalSize);
+                }
+            } catch (error) {
+                console.error('Failed to load stats:', error);
+            }
+        }
+
+        async function loadFiles() {
+            const fileList = document.getElementById('fileList');
+            fileList.innerHTML = '<div class="loading">加载中...</div>';
+            
+            try {
+                const response = await fetch('/api/vector/files');
+                const data = await response.json();
+                
+                allFiles = data.files || [];
+                displayFiles(allFiles);
+                loadStats();
+            } catch (error) {
+                fileList.innerHTML = '<div class="empty-state"><div class="empty-icon">❌</div>加载失败：' + error.message + '</div>';
+            }
+        }
+
+        function displayFiles(files) {
+            const fileList = document.getElementById('fileList');
+            
+            if (files.length === 0) {
+                fileList.innerHTML = '<div class="empty-state"><div class="empty-icon">📁</div>暂无文件</div>';
+                return;
+            }
+            
+            fileList.innerHTML = files.map(file => `
+                <div class="file-item">
+                    <div class="file-header">
+                        <div class="file-name">${file.filename}</div>
+                        <button class="btn" onclick="deleteFile('${file.filename}')">删除</button>
+                    </div>
+                    <div class="file-meta">
+                        <div><strong>文件类型:</strong> ${file.file_type}</div>
+                        <div><strong>文件大小:</strong> ${formatFileSize(file.file_size)}</div>
+                        <div><strong>文档块数:</strong> ${file.chunk_count}</div>
+                        <div><strong>上传时间:</strong> ${new Date(file.created_at).toLocaleString()}</div>
+                    </div>
+                </div>
+            `).join('');
+        }
+
+        async function loadDocuments() {
+            const documentList = document.getElementById('documentList');
+            documentList.innerHTML = '<div class="loading">加载中...</div>';
+            
+            try {
+                const response = await fetch('/api/vector/documents');
+                const data = await response.json();
+                
+                allDocuments = data.documents || [];
+                displayDocuments(allDocuments);
+            } catch (error) {
+                documentList.innerHTML = '<div class="empty-state"><div class="empty-icon">❌</div>加载失败：' + error.message + '</div>';
+            }
+        }
+
+        function displayDocuments(documents) {
+            const documentList = document.getElementById('documentList');
+            
+            if (documents.length === 0) {
+                documentList.innerHTML = '<div class="empty-state"><div class="empty-icon">📄</div>暂无文档</div>';
+                return;
+            }
+            
+            documentList.innerHTML = documents.map(doc => `
+                <div class="document-item">
+                    <div class="document-header">
+                        <div class="document-id">文档块 #${doc.chunk_index}</div>
+                        <div class="chunk-index">来自: ${doc.filename}</div>
+                    </div>
+                    <div class="document-meta">
+                        <div><strong>文档ID:</strong> ${doc.id}</div>
+                        <div><strong>文件类型:</strong> ${doc.file_type}</div>
+                        <div><strong>创建时间:</strong> ${new Date(doc.created_at).toLocaleString()}</div>
+                    </div>
+                    <div class="document-content">${escapeHtml(doc.chunk_text)}</div>
+                </div>
+            `).join('');
+        }
+
+        function filterFiles() {
+            const searchTerm = document.getElementById('fileSearch').value.toLowerCase();
+            const filtered = allFiles.filter(file => 
+                file.filename.toLowerCase().includes(searchTerm)
+            );
+            displayFiles(filtered);
+        }
+
+        function filterDocuments() {
+            const searchTerm = document.getElementById('docSearch').value.toLowerCase();
+            const filtered = allDocuments.filter(doc => 
+                doc.chunk_text.toLowerCase().includes(searchTerm) ||
+                doc.filename.toLowerCase().includes(searchTerm)
+            );
+            displayDocuments(filtered);
+        }
+
+        async function deleteFile(filename) {
+            if (!confirm(`确定要删除文件 "${filename}" 吗？这将删除该文件的所有文档块。`)) {
+                return;
+            }
+            
+            try {
+                const response = await fetch(`/api/vector/files/${encodeURIComponent(filename)}`, {
+                    method: 'DELETE'
+                });
+                
+                const result = await response.json();
+                
+                if (result.ok) {
+                    alert(`删除成功！删除了 ${result.docsDeleted} 个文档块`);
+                    loadFiles();
+                    loadStats();
+                } else {
+                    alert('删除失败：' + result.error);
+                }
+            } catch (error) {
+                alert('删除出错：' + error.message);
+            }
+        }
+
+        function formatFileSize(bytes) {
+            if (bytes === 0) return '0 Bytes';
+            const k = 1024;
+            const sizes = ['Bytes', 'KB', 'MB'];
+            const i = Math.floor(Math.log(bytes) / Math.log(k));
+            return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+        }
+
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        // 页面加载时获取数据
+        loadStats();
+        loadFiles();
+    </script>
+</body>
+</html>

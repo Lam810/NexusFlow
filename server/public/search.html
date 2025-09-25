@@ -1,0 +1,468 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>知识库搜索</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+
+        .container {
+            background: white;
+            border-radius: 20px;
+            box-shadow: 0 20px 40px rgba(0, 0, 0, 0.1);
+            padding: 40px;
+            max-width: 1000px;
+            margin: 0 auto;
+        }
+
+        h1 {
+            text-align: center;
+            color: #333;
+            margin-bottom: 30px;
+            font-size: 2.5em;
+            font-weight: 300;
+        }
+
+        .search-section {
+            background: #f8f9ff;
+            padding: 30px;
+            border-radius: 15px;
+            margin-bottom: 30px;
+        }
+
+        .search-box {
+            width: 100%;
+            padding: 20px;
+            border: 3px solid #ddd;
+            border-radius: 15px;
+            font-size: 18px;
+            margin-bottom: 20px;
+            transition: border-color 0.3s ease;
+        }
+
+        .search-box:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+
+        .search-options {
+            display: flex;
+            gap: 20px;
+            align-items: center;
+            margin-bottom: 20px;
+            flex-wrap: wrap;
+        }
+
+        .option-group {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .option-group label {
+            font-weight: 500;
+            color: #333;
+        }
+
+        .option-group select {
+            padding: 8px 12px;
+            border: 2px solid #ddd;
+            border-radius: 8px;
+            font-size: 14px;
+        }
+
+        .btn {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            padding: 15px 30px;
+            border-radius: 10px;
+            font-size: 16px;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            min-width: 120px;
+        }
+
+        .btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 10px 20px rgba(102, 126, 234, 0.3);
+        }
+
+        .btn:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+            transform: none;
+        }
+
+        .loading {
+            text-align: center;
+            padding: 40px;
+            color: #666;
+            font-size: 1.1em;
+        }
+
+        .results-section {
+            margin-top: 30px;
+        }
+
+        .results-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+            padding-bottom: 10px;
+            border-bottom: 2px solid #eee;
+        }
+
+        .results-count {
+            font-size: 1.1em;
+            color: #666;
+        }
+
+        .similarity-threshold {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .similarity-threshold input {
+            width: 100px;
+            padding: 5px 10px;
+            border: 2px solid #ddd;
+            border-radius: 5px;
+        }
+
+        .result-item {
+            background: white;
+            border: 2px solid #f0f0f0;
+            border-radius: 15px;
+            padding: 25px;
+            margin-bottom: 20px;
+            transition: all 0.3s ease;
+            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.05);
+        }
+
+        .result-item:hover {
+            border-color: #667eea;
+            transform: translateY(-2px);
+            box-shadow: 0 5px 20px rgba(102, 126, 234, 0.1);
+        }
+
+        .result-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 15px;
+        }
+
+        .result-filename {
+            font-weight: bold;
+            color: #333;
+            font-size: 1.1em;
+        }
+
+        .similarity-score {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 5px 15px;
+            border-radius: 20px;
+            font-size: 0.9em;
+            font-weight: bold;
+        }
+
+        .result-meta {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            gap: 10px;
+            margin-bottom: 15px;
+            font-size: 0.9em;
+            color: #666;
+        }
+
+        .result-content {
+            background-color: #f8f9fa;
+            padding: 20px;
+            border-radius: 10px;
+            font-family: 'Courier New', monospace;
+            font-size: 14px;
+            line-height: 1.6;
+            white-space: pre-wrap;
+            word-break: break-word;
+            max-height: 200px;
+            overflow-y: auto;
+        }
+
+        .highlight {
+            background-color: #fff3cd;
+            padding: 2px 4px;
+            border-radius: 3px;
+        }
+
+        .empty-state {
+            text-align: center;
+            padding: 60px 20px;
+            color: #999;
+        }
+
+        .empty-icon {
+            font-size: 4em;
+            margin-bottom: 20px;
+            opacity: 0.5;
+        }
+
+        .links {
+            text-align: center;
+            margin-top: 30px;
+            padding-top: 30px;
+            border-top: 1px solid #eee;
+        }
+
+        .links a {
+            color: #667eea;
+            text-decoration: none;
+            margin: 0 15px;
+            padding: 10px 20px;
+            border: 2px solid #667eea;
+            border-radius: 25px;
+            transition: all 0.3s ease;
+        }
+
+        .links a:hover {
+            background-color: #667eea;
+            color: white;
+        }
+
+        .stats {
+            display: flex;
+            justify-content: center;
+            gap: 30px;
+            margin-bottom: 20px;
+            flex-wrap: wrap;
+        }
+
+        .stat-item {
+            text-align: center;
+            color: #666;
+        }
+
+        .stat-number {
+            font-size: 1.5em;
+            font-weight: bold;
+            color: #667eea;
+        }
+
+        .stat-label {
+            font-size: 0.9em;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🔍 知识库搜索</h1>
+        
+        <div class="search-section">
+            <input type="text" class="search-box" id="searchInput" placeholder="输入搜索内容..." onkeypress="handleKeyPress(event)">
+            
+            <div class="search-options">
+                <div class="option-group">
+                    <label for="topK">返回结果数:</label>
+                    <select id="topK">
+                        <option value="3">3</option>
+                        <option value="5" selected>5</option>
+                        <option value="10">10</option>
+                        <option value="20">20</option>
+                    </select>
+                </div>
+                
+                <button class="btn" id="searchBtn" onclick="searchKnowledge()">搜索</button>
+            </div>
+        </div>
+
+        <div class="stats">
+            <div class="stat-item">
+                <div class="stat-number" id="totalFiles">-</div>
+                <div class="stat-label">总文件数</div>
+            </div>
+            <div class="stat-item">
+                <div class="stat-number" id="totalDocs">-</div>
+                <div class="stat-label">总文档块</div>
+            </div>
+            <div class="stat-item">
+                <div class="stat-number" id="totalSize">-</div>
+                <div class="stat-label">总大小</div>
+            </div>
+        </div>
+
+        <div class="results-section" id="resultsSection" style="display: none;">
+            <div class="results-header">
+                <div class="results-count" id="resultsCount">找到 0 个结果</div>
+                <div class="similarity-threshold">
+                    <label>最低相似度:</label>
+                    <input type="number" id="similarityThreshold" value="0.1" min="0" max="1" step="0.1" onchange="filterResults()">
+                </div>
+            </div>
+            <div id="resultsList"></div>
+        </div>
+
+        <div class="links">
+            <a href="/upload.html">📤 上传文件</a>
+            <a href="/database.html">📊 查看数据库</a>
+        </div>
+    </div>
+
+    <script>
+        let currentResults = [];
+
+        function handleKeyPress(event) {
+            if (event.key === 'Enter') {
+                searchKnowledge();
+            }
+        }
+
+        async function searchKnowledge() {
+            const searchInput = document.getElementById('searchInput');
+            const searchBtn = document.getElementById('searchBtn');
+            const resultsSection = document.getElementById('resultsSection');
+            const resultsList = document.getElementById('resultsList');
+            const topK = document.getElementById('topK').value;
+
+            const query = searchInput.value.trim();
+            if (!query) {
+                alert('请输入搜索内容');
+                return;
+            }
+
+            searchBtn.disabled = true;
+            searchBtn.textContent = '搜索中...';
+            resultsList.innerHTML = '<div class="loading">正在搜索知识库...</div>';
+            resultsSection.style.display = 'block';
+
+            try {
+                const response = await fetch('/api/vector/search', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        query: query,
+                        topK: parseInt(topK)
+                    })
+                });
+
+                const data = await response.json();
+                
+                if (data.matches) {
+                    currentResults = data.matches;
+                    displayResults(currentResults);
+                } else {
+                    resultsList.innerHTML = '<div class="empty-state"><div class="empty-icon">❌</div>搜索失败</div>';
+                }
+            } catch (error) {
+                resultsList.innerHTML = '<div class="empty-state"><div class="empty-icon">❌</div>搜索出错：' + error.message + '</div>';
+            } finally {
+                searchBtn.disabled = false;
+                searchBtn.textContent = '搜索';
+            }
+        }
+
+        function displayResults(results) {
+            const resultsList = document.getElementById('resultsList');
+            const resultsCount = document.getElementById('resultsCount');
+            
+            if (results.length === 0) {
+                resultsList.innerHTML = '<div class="empty-state"><div class="empty-icon">🔍</div>未找到相关结果</div>';
+                resultsCount.textContent = '找到 0 个结果';
+                return;
+            }
+
+            resultsCount.textContent = `找到 ${results.length} 个结果`;
+            
+            resultsList.innerHTML = results.map((result, index) => {
+                const similarity = result.similarity || result.score || 0;
+                const similarityPercent = (similarity * 100).toFixed(1);
+                
+                return `
+                    <div class="result-item" data-similarity="${similarity}">
+                        <div class="result-header">
+                            <div class="result-filename">结果 #${index + 1}</div>
+                            <div class="similarity-score">相似度: ${similarityPercent}%</div>
+                        </div>
+                        <div class="result-meta">
+                            <div><strong>文档ID:</strong> ${result.id}</div>
+                            <div><strong>相似度分数:</strong> ${similarity.toFixed(4)}</div>
+                        </div>
+                        <div class="result-content">${escapeHtml(result.text)}</div>
+                    </div>
+                `;
+            }).join('');
+        }
+
+        function filterResults() {
+            const threshold = parseFloat(document.getElementById('similarityThreshold').value);
+            const filtered = currentResults.filter(result => {
+                const similarity = result.similarity || result.score || 0;
+                return similarity >= threshold;
+            });
+            
+            const resultsList = document.getElementById('resultsList');
+            const resultItems = resultsList.querySelectorAll('.result-item');
+            
+            resultItems.forEach(item => {
+                const similarity = parseFloat(item.dataset.similarity);
+                if (similarity >= threshold) {
+                    item.style.display = 'block';
+                } else {
+                    item.style.display = 'none';
+                }
+            });
+            
+            const visibleCount = Array.from(resultItems).filter(item => item.style.display !== 'none').length;
+            document.getElementById('resultsCount').textContent = `显示 ${visibleCount} 个结果`;
+        }
+
+        async function loadStats() {
+            try {
+                const response = await fetch('/api/vector/stats');
+                const data = await response.json();
+                
+                if (data.stats) {
+                    document.getElementById('totalFiles').textContent = data.stats.totalFiles;
+                    document.getElementById('totalDocs').textContent = data.stats.totalDocuments;
+                    document.getElementById('totalSize').textContent = formatFileSize(data.stats.totalSize);
+                }
+            } catch (error) {
+                console.error('Failed to load stats:', error);
+            }
+        }
+
+        function formatFileSize(bytes) {
+            if (bytes === 0) return '0 Bytes';
+            const k = 1024;
+            const sizes = ['Bytes', 'KB', 'MB'];
+            const i = Math.floor(Math.log(bytes) / Math.log(k));
+            return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+        }
+
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        // 页面加载时获取统计信息
+        loadStats();
+    </script>
+</body>
+</html>

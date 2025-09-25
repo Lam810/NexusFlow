@@ -5,13 +5,18 @@ import fetch from 'node-fetch';
 import multer from 'multer';
 import fs from 'fs';
 import path from 'path';
+import VectorDB from './vectorDB.js';
 
 const app = express();
 app.use(cors());
 app.use(express.json({ limit: '2mb' }));
+app.use(express.static('public'));
 
 const upload = multer({ dest: 'uploads/' });
-// Simple in-memory knowledge base: [{ id, text, embedding }]
+// 初始化向量数据库
+const vectorDB = new VectorDB();
+
+// 为了向后兼容，保留内存知识库
 const knowledgeBase = [];
 const KNOWLEDGEBASE_MAX_ITEMS = 2000; // 防止内存无限增长
 
@@ -70,8 +75,12 @@ function chunkText(text, chunkSize = 800, overlap = 100) {
     text = text.substring(0, 100000) + '...';
   }
   
-  // 按 \n\n 分段
-  const paragraphs = text.split('\n\n').filter(p => p.trim().length > 0);
+  // 按段落分段：先按 \n\n 分割，如果没有则按单个 \n 分割
+  let paragraphs = text.split('\n\n').filter(p => p.trim().length > 0);
+  if (paragraphs.length <= 1) {
+    // 如果没有双换行符，尝试按单个换行符分割
+    paragraphs = text.split('\n').filter(p => p.trim().length > 0);
+  }
   const chunks = [];
   
   for (const paragraph of paragraphs) {
@@ -113,6 +122,94 @@ app.post('/api/knowledge/upsert', async (req, res) => {
   }
 });
 
+// 新的向量数据库上传端点
+app.post('/api/vector/upload', upload.single('file'), async (req, res) => {
+  try {
+    const { text, filename } = req.body; // optional
+    let rawText = (typeof text === 'string') ? text : (text || '');
+    let originalFilename = filename || 'unknown.txt';
+    
+    if (req.file) {
+      // 限制文件大小
+      if (req.file.size > 500000) { // 500KB限制
+        return res.status(400).json({ error: 'File too large. Maximum size is 500KB.' });
+      }
+      const filePath = path.resolve(req.file.path);
+      rawText = fs.readFileSync(filePath, 'utf-8');
+      originalFilename = req.file.originalname || filename || 'unknown.txt';
+      fs.unlinkSync(filePath);
+    }
+    
+    if (!rawText || !rawText.trim()) {
+      return res.status(400).json({ error: 'No text content provided' });
+    }
+    
+    const chunks = chunkText(rawText);
+    if (chunks.length === 0) {
+      return res.status(400).json({ error: 'No valid text chunks found' });
+    }
+    
+    // 生成文件ID
+    const fileId = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    
+    // 插入文件信息
+    vectorDB.insertFile({
+      id: fileId,
+      filename: originalFilename,
+      original_text: rawText,
+      file_size: rawText.length,
+      file_type: path.extname(originalFilename).slice(1) || 'txt',
+      chunk_count: chunks.length
+    });
+    
+    const results = [];
+    let successCount = 0;
+    
+    // 处理每个文本块
+    for (let i = 0; i < chunks.length; i++) {
+      const chunk = chunks[i];
+      try {
+        const embedding = await createEmbedding(chunk);
+        const docId = `${fileId}-chunk-${i}`;
+        
+        // 插入到向量数据库
+        vectorDB.insertDocument({
+          id: docId,
+          filename: originalFilename,
+          original_text: rawText,
+          chunk_index: i,
+          chunk_text: chunk,
+          embedding: embedding,
+          file_size: rawText.length,
+          file_type: path.extname(originalFilename).slice(1) || 'txt'
+        });
+        
+        // 同时添加到内存知识库以保持兼容性
+        addToKnowledgeBase({ id: docId, text: chunk, embedding });
+        
+        results.push({ ok: true, chunkId: docId });
+        successCount++;
+      } catch (error) {
+        console.error('Failed to process chunk:', error);
+        results.push({ ok: false, error: error.message });
+      }
+    }
+    
+    res.json({ 
+      ok: true, 
+      fileId: fileId,
+      filename: originalFilename,
+      inserted: successCount, 
+      total: chunks.length,
+      results: results
+    });
+  } catch (e) {
+    console.error('Upload error:', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// 保持原有的内存知识库上传端点
 app.post('/api/knowledge/upload', upload.single('file'), async (req, res) => {
   try {
     const { text } = req.body; // optional
@@ -158,6 +255,76 @@ app.post('/api/knowledge/upload', upload.single('file'), async (req, res) => {
   }
 });
 
+// 向量数据库搜索端点
+app.post('/api/vector/search', async (req, res) => {
+  try {
+    const { query, topK = 5 } = req.body;
+    const qEmbedding = await createEmbedding(query);
+    const results = vectorDB.searchSimilar(qEmbedding, topK);
+    res.json({ matches: results });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// 获取所有文件列表
+app.get('/api/vector/files', (req, res) => {
+  try {
+    const files = vectorDB.getAllFiles();
+    res.json({ files });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// 获取所有文档列表
+app.get('/api/vector/documents', (req, res) => {
+  try {
+    const documents = vectorDB.getAllDocuments();
+    res.json({ documents });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// 根据文件名获取文档
+app.get('/api/vector/files/:filename', (req, res) => {
+  try {
+    const { filename } = req.params;
+    const documents = vectorDB.getDocumentsByFilename(filename);
+    res.json({ documents });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// 删除文件
+app.delete('/api/vector/files/:filename', (req, res) => {
+  try {
+    const { filename } = req.params;
+    const result = vectorDB.deleteFile(filename);
+    res.json({ 
+      ok: true, 
+      filename,
+      docsDeleted: result.docsDeleted,
+      fileDeleted: result.fileDeleted 
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// 获取数据库统计信息
+app.get('/api/vector/stats', (req, res) => {
+  try {
+    const stats = vectorDB.getStats();
+    res.json({ stats });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// 保持原有的内存知识库搜索端点
 app.post('/api/knowledge/search', async (req, res) => {
   try {
     const { query, topK = 3 } = req.body;
@@ -179,30 +346,56 @@ app.post('/api/chat', async (req, res) => {
   try {
     const { messages, model = 'qwen-plus', temperature = 0.7, apiKey, apiUrl, provider = 'qwen' } = req.body;
 
-    const key = apiKey || QWEN_API_KEY;
-    const baseUrl = apiUrl || (provider === 'openai' ? 'https://api.openai.com/v1' : QWEN_BASE_URL);
-
-    if (!key) {
-      throw new Error('API key is required');
+    // 根据provider确定API配置
+    let key, baseUrl, endpoint;
+    
+    if (provider === 'local') {
+      // 本地模型不需要API Key
+      key = null;
+      baseUrl = apiUrl || 'http://192.168.137.4:8000/v1/chat/completions';
+      endpoint = `${baseUrl}`;
+    } else {
+      // 远程模型需要API Key
+      key = apiKey || QWEN_API_KEY;
+      baseUrl = apiUrl || (provider === 'openai' ? 'https://api.openai.com/v1' : QWEN_BASE_URL);
+      endpoint = `${baseUrl}/chat/completions`;
     }
 
-    const endpoint = provider === 'openai' ? `${baseUrl}/chat/completions` : `${baseUrl}/chat/completions`;
+    if (!key && provider !== 'local') {
+      throw new Error('API key is required for remote models');
+    }
+
+    // 构建请求头
+    const headers = {
+      'Content-Type': 'application/json',
+    };
+    
+    // 只有非本地模型才需要Authorization头
+    if (key) {
+      headers['Authorization'] = `Bearer ${key}`;
+    }
 
     const r = await fetch(endpoint, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${key}`,
-      },
-      body: JSON.stringify({ model, messages, temperature, stream: false }),
+      headers,
+      body: JSON.stringify({ 
+        model: provider === 'local' ? (model || 'local-model') : model, 
+        messages, 
+        temperature, 
+        stream: false,
+        max_tokens: provider === 'local' ? 1000 : undefined // 为本地模型添加max_tokens
+      }),
     });
+    
     if (!r.ok) {
       const text = await r.text();
       throw new Error(`Chat failed: ${r.status} ${text}`);
     }
+    
     const json = await r.json();
     res.json(json);
   } catch (e) {
+    console.error('Chat API error:', e);
     res.status(500).json({ error: e.message });
   }
 });
@@ -274,7 +467,12 @@ app.post('/api/http-request', async (req, res) => {
 
 app.get('/api/health', (_, res) => res.json({ ok: true }));
 
-const PORT = process.env.PORT || 8787;
+// 根路径服务主页
+app.get('/', (_, res) => {
+  res.sendFile(path.join(process.cwd(), 'public', 'index.html'));
+});
+
+const PORT = process.env.PORT || 5757;
 app.listen(PORT, () => console.log(`Server listening on http://localhost:${PORT}`));
 
 
