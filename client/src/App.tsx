@@ -28,10 +28,10 @@ type LlmConfig = {
   userPrompt: string
   apiKey: string
   apiUrl: string
-  provider?: 'qwen' | 'openai' | 'local'
+  provider?: 'qwen' | 'openai' | 'local' | 'openrouter'
 }
 type AnswerConfig = { mode: 'llm' | 'template'; template: string }
-// 扩展：直接回复是否流式输出
+// 直接回复是否流式输出
 type AnswerConfigEx = AnswerConfig & { stream?: boolean }
 type HttpConfig = {
   method: string
@@ -182,6 +182,123 @@ function renderMarkdownToHtml(md: string): string {
   return text
 }
 
+// 解析简单 Markdown 表格（以 | 分隔，第一行为表头）
+function parseMarkdownTable(md: string): { headers: string[]; rows: Array<Record<string, string>> } | null {
+  const tableBlockMatch = md.match(/\|[^\n]+\|[\s\S]*?(?:\n\s*$|$)/)
+  if (!tableBlockMatch) return null
+  const lines = tableBlockMatch[0]
+    .split('\n')
+    .map(l => l.trim())
+    .filter(l => l.startsWith('|') && l.endsWith('|'))
+
+  if (lines.length < 2) return null
+  const headerCells = lines[0]
+    .slice(1, -1)
+    .split('|')
+    .map(s => s.trim())
+  // 第二行通常是 --- 分割线，跳过
+  const dataLines = lines.slice(1).filter(l => !/^\|\s*-+/.test(l))
+  const rows: Array<Record<string, string>> = []
+  for (const l of dataLines) {
+    const cells = l.slice(1, -1).split('|').map(s => s.trim())
+    if (cells.length !== headerCells.length) continue
+    const row: Record<string, string> = {}
+    headerCells.forEach((h, idx) => (row[h] = cells[idx]))
+    rows.push(row)
+  }
+  if (headerCells.length === 0 || rows.length === 0) return null
+  return { headers: headerCells, rows }
+}
+
+// 动态加载 ECharts（CDN），全局只加载一次
+let echartsLoadingPromise: Promise<any> | null = null
+function loadEcharts(): Promise<any> {
+  if ((window as any).echarts) return Promise.resolve((window as any).echarts)
+  if (echartsLoadingPromise) return echartsLoadingPromise
+  echartsLoadingPromise = new Promise((resolve, reject) => {
+    const script = document.createElement('script')
+    script.src = 'https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js'
+    script.async = true
+    script.onload = () => resolve((window as any).echarts)
+    script.onerror = (e) => reject(e)
+    document.head.appendChild(script)
+  })
+  return echartsLoadingPromise
+}
+
+// 简易图表挂件：支持表格数据转折线/柱状图
+function ChartWidget({ headers, rows }: { headers: string[]; rows: Array<Record<string, string>> }) {
+  const [type, setType] = React.useState('bar' as any)
+  const chartRef = React.useRef(null as any)
+
+  React.useEffect(() => {
+    let disposed = false
+    async function render() {
+      const echarts = await loadEcharts()
+      if (!chartRef.current || disposed) return
+      const inst = echarts.init(chartRef.current)
+      const xKey = headers[0]
+      const yKey = headers[1]
+      const x = rows.map(r => r[xKey])
+      const y = rows.map(r => Number(String(r[yKey]).replace(/[^\d.-]/g, '')))
+      if (type === 'pie') {
+        inst.setOption({
+          tooltip: { trigger: 'item' },
+          legend: { bottom: 0 },
+          series: [{
+            type: 'pie',
+            radius: ['35%', '70%'],
+            center: ['50%', '45%'],
+            data: x.map((name, i) => ({ name, value: y[i] })),
+            itemStyle: { borderColor: '#fff', borderWidth: 2 }
+          }],
+        })
+      } else {
+        inst.setOption({
+          grid: { left: 30, right: 10, top: 20, bottom: 30 },
+          tooltip: { trigger: 'axis' },
+          xAxis: { type: 'category', data: x },
+          yAxis: { type: 'value' },
+          series: [{ type: type === 'line' ? 'line' : 'bar', data: y, itemStyle: { color: '#8b5cf6' } }],
+        })
+      }
+      const handle = () => inst.resize()
+      window.addEventListener('resize', handle)
+      return () => {
+        window.removeEventListener('resize', handle)
+        inst.dispose()
+      }
+    }
+    const cleanupPromise = render()
+    return () => { disposed = true; Promise.resolve(cleanupPromise).catch(() => {}) }
+  }, [type, headers, rows])
+
+  return (
+    <div className="chart-widget">
+      <div className="chart-table">
+        <table>
+          <thead>
+            <tr>{headers.map(h => <th key={h}>{h}</th>)}</tr>
+          </thead>
+          <tbody>
+            {rows.map((r, i) => (
+              <tr key={i}>{headers.map(h => <td key={h}>{r[h]}</td>)}</tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <div className="chart-toolbar">
+        <select value={type} onChange={(e) => setType(e.target.value as any)}>
+          <option value="bar">柱状图</option>
+          <option value="line">折线图</option>
+          <option value="pie">饼图</option>
+        </select>
+      </div>
+      <div ref={chartRef} style={{ width: '100%', height: 300, marginTop: 6 }} />
+    </div>
+  )
+}
+
 async function runFlow(
   query: string,
   nodes: Node[],
@@ -323,7 +440,7 @@ async function runFlow(
       const llmVarName = `llm_text_${safeId}`
       ctx.variables[llmVarName] = llmOutput
       
-      // 保持向后兼容：最后一个 LLM 的输出仍然设置为 llm_text
+      // 最后一个 LLM 的输出仍然设置为 llm_text
       ctx.llmText = llmOutput
       ctx.variables.llm_text = llmOutput
       if (onOutput) onOutput(nodeId, llmOutput)
@@ -648,7 +765,16 @@ export default function App() {
                   <div className="chat-answer">
                     <div className="chat-avatar">{(chat as any).meta?.avatar || '🤖'}</div>
                     <div className="chat-content">
-                      <div className="chat-text" dangerouslySetInnerHTML={{ __html: ((chat as any).meta?.label ? `<div style=\"font-size:12px;color:#64748b;margin-bottom:4px\"><strong>${(chat as any).meta.label}</strong> 输出</div>` : '') + renderMarkdownToHtml(String(chat.answer || '')) }} />
+                      {(() => {
+                        const raw = String(chat.answer || '')
+                        const parsed = parseMarkdownTable(raw)
+                        if (parsed) {
+                          return (
+                            <ChartWidget headers={parsed.headers} rows={parsed.rows} />
+                          )
+                        }
+                        return <div className="chat-text" dangerouslySetInnerHTML={{ __html: ((chat as any).meta?.label ? `<div style=\"font-size:12px;color:#64748b;margin-bottom:4px\"><strong>${(chat as any).meta.label}</strong> 输出</div>` : '') + renderMarkdownToHtml(raw) }} />
+                      })()}
                       <div className="chat-time">{new Date(chat.timestamp).toLocaleTimeString()}</div>
                     </div>
                   </div>
@@ -843,7 +969,7 @@ export default function App() {
           </div>
           <label>API 类型：
             <select value={cfg.provider || 'qwen'} onChange={(e) => {
-              const provider = e.target.value as 'qwen' | 'openai' | 'local'
+              const provider = e.target.value as 'qwen' | 'openai' | 'local' | 'openrouter'
               let suggestedUrl = ''
               if (provider === 'qwen') {
                 suggestedUrl = 'https://dashscope.aliyuncs.com/compatible-mode/v1'
@@ -851,11 +977,21 @@ export default function App() {
                 suggestedUrl = 'https://api.openai.com/v1'
               } else if (provider === 'local') {
                 suggestedUrl = 'http://192.168.137.4:8000/v1/chat/completions'
+              } else if (provider === 'openrouter') {
+                suggestedUrl = 'https://openrouter.ai/api/v1'
               }
-              setNodes((ns) => ns.map(n => n.id === selected.id ? { ...n, data: { ...n.data, config: { ...cfg, provider, apiUrl: suggestedUrl } } } : n))
+              // 根据 provider 设置推荐模型
+              const model = (
+                provider === 'qwen' ? 'qwen-plus' :
+                provider === 'openai' ? 'gpt-4o' :
+                provider === 'openrouter' ? 'x-ai/grok-4-fast:free' :
+                'local-model'
+              )
+              setNodes((ns) => ns.map(n => n.id === selected.id ? { ...n, data: { ...n.data, config: { ...cfg, provider, apiUrl: suggestedUrl, model } } } : n))
             }}>
-              <option value="qwen">Qwen (OpenAI兼容)</option>
+              <option value="qwen">Qwen</option>
               <option value="openai">OpenAI</option>
+              <option value="openrouter">OpenRouter</option>
               <option value="local">本地模型</option>
             </select>
           </label>
@@ -872,13 +1008,32 @@ export default function App() {
               onChange={(e) => setNodes((ns) => ns.map(n => n.id === selected.id ? { ...n, data: { ...n.data, config: { ...cfg, apiKey: e.target.value } } } : n))} 
             />
           </label>
-          <label>模型：
-            <input 
-              value={cfg.model}
-              placeholder={cfg.provider === 'local' ? 'local-model' : '请输入模型名称'}
-              onChange={(e) => setNodes((ns) => ns.map(n => n.id === selected.id ? { ...n, data: { ...n.data, config: { ...cfg, model: e.target.value } } } : n))} 
-            />
-          </label>
+          {cfg.provider === 'openrouter' ? (
+            <label>模型：
+              <select value={cfg.model || 'x-ai/grok-4-fast:free'} onChange={(e) => setNodes((ns) => ns.map(n => n.id === selected.id ? { ...n, data: { ...n.data, config: { ...cfg, model: e.target.value } } } : n))}>
+                <option value="x-ai/grok-4-fast:free">x-ai/grok-4-fast:free</option>
+                <option value="deepseek/deepseek-chat-v3.1:free">deepseek/deepseek-chat-v3.1:free</option>
+                <option value="tencent/hunyuan-a13b-instruct:free">tencent/hunyuan-a13b-instruct:free</option>
+                <option value="qwen/qwen3-235b-a22b:free">qwen/qwen3-235b-a22b:free</option>
+                <option value="microsoft/mai-ds-r1:free">microsoft/mai-ds-r1:free</option>
+              </select>
+            </label>
+          ) : cfg.provider === 'local' ? (
+            <label>模型：
+              <input 
+                value={cfg.model || 'local-model'}
+                disabled
+              />
+            </label>
+          ) : (
+            <label>模型：
+              <input 
+                value={cfg.model || (cfg.provider === 'qwen' ? 'qwen-plus' : 'gpt-4o')}
+                placeholder={cfg.provider === 'qwen' ? 'qwen-plus 等模型' : 'gpt-4o 等模型'}
+                onChange={(e) => setNodes((ns) => ns.map(n => n.id === selected.id ? { ...n, data: { ...n.data, config: { ...cfg, model: e.target.value } } } : n))}
+              />
+            </label>
+          )}
           <label>温度：
             <input type="number" step="0.1" value={cfg.temperature}
               onChange={(e) => setNodes((ns) => ns.map(n => n.id === selected.id ? { ...n, data: { ...n.data, config: { ...cfg, temperature: Number(e.target.value) } } } : n))} />

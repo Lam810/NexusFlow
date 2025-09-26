@@ -104,3 +104,12 @@ pre { white-space: pre-wrap; word-break: break-word; background: #ffffff; border
 .chat-input button:disabled { opacity: 0.5; cursor: not-allowed; }
 
 
+/* 图表组件 */
+.chart-widget { background: #fff; border: 1px solid #e5e7eb; border-radius: 12px; padding: 10px; margin-top: 8px; box-shadow: 0 1px 4px rgba(0,0,0,.03); }
+.chart-toolbar { display: flex; justify-content: flex-end; margin-top: 6px; }
+.chart-toolbar select { padding: 6px 8px; border: 1px solid #e5e7eb; border-radius: 8px; background: #f9fafb; }
+.chart-table table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.chart-table th, .chart-table td { border: 1px solid #e5e7eb; padding: 6px 8px; text-align: left; }
+.chart-table th { background: #f3f4f6; }
+
+

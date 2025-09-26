@@ -54,6 +54,8 @@ cd client && npm install && cd ..
 - 复制 `server/.env.example` 为 `server/.env`（如果不存在，创建并添加）：
   ```
   QWEN_API_KEY=sk-your-api-key-here
+  OPENAI_API_KEY=sk-your-openai-key-here
+  OPENROUTER_API_KEY=sk-your-openrouter-key-here
   PORT=5757
   ```
 
