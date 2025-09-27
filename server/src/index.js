@@ -21,10 +21,12 @@ const QWEN_BASE_URL = 'https://dashscope.aliyuncs.com/compatible-mode/v1';
 const QWEN_API_KEY = process.env.QWEN_API_KEY;
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY;
+const LOCAL_MODEL_URL = process.env.LOCAL_MODEL_URL || LOCAL_MODEL_URL;
 
 if (!QWEN_API_KEY) console.warn('QWEN_API_KEY not set. Set it in server/.env');
 if (!OPENAI_API_KEY) console.warn('OPENAI_API_KEY not set. Set it in server/.env');
 if (!OPENROUTER_API_KEY) console.warn('OPENROUTER_API_KEY not set. Set it in server/.env');
+console.log(`Local model URL: ${LOCAL_MODEL_URL}`);
 
 async function createEmbedding(input) {
   const res = await fetch(`${QWEN_BASE_URL}/embeddings`, {
@@ -250,7 +252,7 @@ app.post('/api/chat', async (req, res) => {
     if (provider === 'local') {
       // 本地模型不需要API Key
       key = null;
-      baseUrl = apiUrl || 'http://192.168.137.4:8000/v1/chat/completions';
+      baseUrl = apiUrl || LOCAL_MODEL_URL;
       endpoint = `${baseUrl}`;
     } else {
       // 远程模型需要API Key
@@ -368,121 +370,127 @@ app.post('/api/http-request', async (req, res) => {
 // 数据分析代理：将问题转发到任意分析服务（示例：将其发送到 LLM 做数据理解）
 app.post('/api/analysis', async (req, res) => {
   try {
-    const { apiUrl, apiKey, question } = req.body
-    if (apiUrl) {
-      const headers = { 'Content-Type': 'application/json' }
-      if (apiKey) headers['Authorization'] = `Bearer ${apiKey}`
-      const r = await fetch(apiUrl, { method: 'POST', headers, body: JSON.stringify({ question }) })
-      const text = await r.text()
-      let json = null
-      try { json = JSON.parse(text) } catch {}
-      return res.json(json || { text })
-    }
+    const { apiUrl, apiKey, question, provider = 'qwen', model = 'qwen-plus', temperature = 0.2 } = req.body
 
     const messages = [
       { role: 'system', content: '你是一名严谨的数据分析师。请以 Markdown 输出，结构包含：\n\n**结论**；\n\n**要点**（3-5条）；\n\n**图表数据**（若需要，用表格呈现，包含 X 和 Y 两列）。' },
       { role: 'user', content: `请基于你的数据知识，对以下问题进行数据分析并给出可视化建议：${question}` }
     ]
 
-    async function tryCall(provider) {
-      try {
-        let baseUrl = provider === 'openai' ? 'https://api.openai.com/v1' : provider === 'openrouter' ? 'https://openrouter.ai/api/v1' : QWEN_BASE_URL
-        let key = provider === 'openai' ? OPENAI_API_KEY : provider === 'openrouter' ? OPENROUTER_API_KEY : QWEN_API_KEY
-        if (provider === 'local') { baseUrl = 'http://192.168.137.4:8000/v1'; key = null }
-        const endpoint = `${baseUrl}/chat/completions`
-        const headers = { 'Content-Type': 'application/json' }
-        if (key) headers['Authorization'] = `Bearer ${key}`
-        const r = await fetch(endpoint, {
-          method: 'POST',
-          headers,
-          body: JSON.stringify({
-            model: provider === 'openai' ? 'gpt-4o' : provider === 'openrouter' ? 'x-ai/grok-4-fast:free' : provider === 'local' ? 'local-model' : 'qwen-plus',
-            messages,
-            temperature: 0.2
-          })
-        })
-        if (!r.ok) throw new Error(`${provider} failed: ${r.status}`)
-        const j = await r.json()
-        return j?.choices?.[0]?.message?.content
-      } catch { return null }
+    // 根据provider确定API配置
+    let key, baseUrl, endpoint;
+    
+    if (provider === 'local') {
+      // 本地模型不需要API Key
+      key = null;
+      baseUrl = apiUrl || LOCAL_MODEL_URL;
+      endpoint = `${baseUrl}`;
+    } else {
+      // 远程模型需要API Key
+      if (provider === 'openai') key = apiKey || OPENAI_API_KEY; 
+      else if (provider === 'openrouter') key = apiKey || OPENROUTER_API_KEY; 
+      else key = apiKey || QWEN_API_KEY;
+      baseUrl = apiUrl || (provider === 'openai' ? 'https://api.openai.com/v1' : provider === 'openrouter' ? 'https://openrouter.ai/api/v1' : QWEN_BASE_URL);
+      endpoint = `${baseUrl}/chat/completions`;
     }
 
-    const order = ['qwen', 'openrouter', 'openai', 'local']
-    for (const p of order) {
-      const text = await tryCall(p)
-      if (text) return res.json({ text })
+    if (!key && provider !== 'local') {
+      throw new Error('API key is required for remote models');
     }
-    return res.json({ text: `分析任务已接收：${String(question || '')}\n(未能成功调用外部服务，返回示例结果)` })
+
+    // 构建请求头
+    const headers = {
+      'Content-Type': 'application/json',
+    };
+    
+    // 只有非本地模型才需要Authorization头
+    if (key) {
+      headers['Authorization'] = `Bearer ${key}`;
+    }
+
+    const r = await fetch(endpoint, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ 
+        model: provider === 'local' ? (model || 'local-model') : model, 
+        messages, 
+        temperature: temperature || 0.2, 
+        stream: false,
+        max_tokens: provider === 'local' ? 1000 : undefined // 为本地模型添加max_tokens
+      }),
+    });
+    
+    if (!r.ok) {
+      const text = await r.text();
+      throw new Error(`Analysis failed: ${r.status} ${text}`);
+    }
+    
+    const json = await r.json();
+    res.json({ text: json?.choices?.[0]?.message?.content || '分析完成' });
   } catch (e) {
-    try { res.status(500).json({ error: e.message }) } catch {}
+    console.error('Analysis API error:', e);
+    res.status(500).json({ error: e.message });
   }
 })
 
 // Analysis streaming via chat SSE
 app.post('/api/analysis-stream', async (req, res) => {
   try {
-    const { apiUrl, apiKey, question } = req.body
-    if (apiUrl) {
-      const headers = { 'Content-Type': 'application/json' }
-      if (apiKey) headers['Authorization'] = `Bearer ${apiKey}`
-      const upstream = await fetch(apiUrl, { method: 'POST', headers, body: JSON.stringify({ question, stream: true }) })
-      if (!upstream.ok || !upstream.body) {
-        const text = await upstream.text().catch(()=> '')
-        throw new Error(`Upstream failed: ${upstream.status} ${text}`)
-      }
-      res.setHeader('Content-Type', 'text/event-stream; charset=utf-8')
-      res.setHeader('Cache-Control', 'no-cache')
-      res.setHeader('Connection', 'keep-alive')
-      upstream.body.on('data', chunk => res.write(chunk))
-      upstream.body.on('end', () => res.end())
-      upstream.body.on('error', () => res.end())
-      return
+    const { apiUrl, apiKey, question, provider = 'qwen', model = 'qwen-plus', temperature = 0.2 } = req.body;
+
+    const messages = [
+      { role: 'system', content: '你是一名严谨的数据分析师。请以 Markdown 输出，结构包含：\\n\\n**结论**；\\n\\n**要点**（3-5条）；\\n\\n**图表数据**（若需要，用表格呈现，包含 X 和 Y 两列）。' },
+      { role: 'user', content: `请基于你的数据知识，对以下问题进行数据分析并给出可视化建议：${question}` }
+    ];
+
+    let key, baseUrl, endpoint;
+    if (provider === 'local') {
+      key = null;
+      baseUrl = apiUrl || LOCAL_MODEL_URL;
+      endpoint = `${baseUrl}`;
+    } else {
+      if (provider === 'openai') key = apiKey || OPENAI_API_KEY; 
+      else if (provider === 'openrouter') key = apiKey || OPENROUTER_API_KEY; 
+      else key = apiKey || QWEN_API_KEY;
+      baseUrl = apiUrl || (provider === 'openai' ? 'https://api.openai.com/v1' : provider === 'openrouter' ? 'https://openrouter.ai/api/v1' : QWEN_BASE_URL);
+      endpoint = `${baseUrl}/chat/completions`;
+    }
+    if (!key && provider !== 'local') {
+      throw new Error('API key is required for remote models');
     }
 
-    async function tryStream(provider) {
-      try {
-        let baseUrl = provider === 'openai' ? 'https://api.openai.com/v1' : provider === 'openrouter' ? 'https://openrouter.ai/api/v1' : QWEN_BASE_URL
-        let key = provider === 'openai' ? OPENAI_API_KEY : provider === 'openrouter' ? OPENROUTER_API_KEY : QWEN_API_KEY
-        if (provider === 'local') { baseUrl = 'http://192.168.137.4:8000/v1'; key = null }
-        const endpoint = `${baseUrl}/chat/completions`
-        const headers = { 'Content-Type': 'application/json' }
-        if (key) headers['Authorization'] = `Bearer ${key}`
-        const r = await fetch(endpoint, {
-          method: 'POST',
-          headers,
-          body: JSON.stringify({
-            model: provider === 'openai' ? 'gpt-4o' : provider === 'openrouter' ? 'x-ai/grok-4-fast:free' : provider === 'local' ? 'local-model' : 'qwen-plus',
-            messages: [
-              { role: 'system', content: '你是一名严谨的数据分析师。请以 Markdown 输出，结构包含：\\n\\n**结论**；\\n\\n**要点**（3-5条）；\\n\\n**图表数据**（若需要，用表格呈现，包含 X 和 Y 两列）。' },
-              { role: 'user', content: `请基于你的数据知识，对以下问题进行数据分析并给出可视化建议：${question}` }
-            ],
-            temperature: 0.2,
-            stream: true
-          })
-        })
-        if (!r.ok || !r.body) throw new Error(`${provider} stream failed`)
-        res.setHeader('Content-Type', 'text/event-stream; charset=utf-8')
-        res.setHeader('Cache-Control', 'no-cache')
-        res.setHeader('Connection', 'keep-alive')
-        r.body.on('data', chunk => res.write(chunk))
-        r.body.on('end', () => res.end())
-        r.body.on('error', () => res.end())
-        return true
-      } catch { return false }
+    const headers = { 'Content-Type': 'application/json' };
+    if (key) headers['Authorization'] = `Bearer ${key}`;
+
+    const upstream = await fetch(endpoint, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        model: provider === 'local' ? (model || 'local-model') : model,
+        messages,
+        temperature: temperature || 0.2,
+        stream: true,
+      }),
+    });
+
+    if (!upstream.ok || !upstream.body) {
+      const text = await upstream.text().catch(() => '');
+      throw new Error(`Upstream failed: ${upstream.status} ${text}`);
     }
 
-    const order = ['qwen', 'openrouter', 'openai', 'local']
-    for (const p of order) {
-      const ok = await tryStream(p)
-      if (ok) return
-    }
-    res.setHeader('Content-Type', 'text/event-stream; charset=utf-8')
-    res.write(`data: {"text":"分析任务已接收：${String(question || '')}"}\n\n`)
-    res.end()
+    res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+
+    upstream.body.on('data', chunk => res.write(chunk));
+    upstream.body.on('end', () => res.end());
+    upstream.body.on('error', () => res.end());
   } catch (e) {
-    try { res.status(500).end(`data: {"error":"${String(e.message || e)}"}\n\n`) } catch {}
+    try {
+      res.status(500).end(`data: {"error":"${String(e.message || e)}"}\n\n`);
+    } catch {}
   }
-})
+});
 
 // Chat streaming (SSE passthrough)
 app.post('/api/chat-stream', async (req, res) => {
@@ -492,7 +500,7 @@ app.post('/api/chat-stream', async (req, res) => {
     let key, baseUrl, endpoint;
     if (provider === 'local') {
       key = null;
-      baseUrl = apiUrl || 'http://192.168.137.4:8000/v1/chat/completions';
+      baseUrl = apiUrl || LOCAL_MODEL_URL;
       endpoint = `${baseUrl}`;
     } else {
       if (provider === 'openai') key = apiKey || OPENAI_API_KEY; 
@@ -539,6 +547,35 @@ app.post('/api/chat-stream', async (req, res) => {
 });
 
 app.get('/api/health', (_, res) => res.json({ ok: true }));
+
+// 获取服务器配置信息
+app.get('/api/config', (_, res) => {
+  res.json({
+    localModelUrl: LOCAL_MODEL_URL,
+    providers: {
+      qwen: {
+        name: '通义千问',
+        defaultModel: 'qwen-plus',
+        defaultUrl: QWEN_BASE_URL
+      },
+      openai: {
+        name: 'OpenAI',
+        defaultModel: 'gpt-4o',
+        defaultUrl: 'https://api.openai.com/v1'
+      },
+      openrouter: {
+        name: 'OpenRouter',
+        defaultModel: 'x-ai/grok-4-fast:free',
+        defaultUrl: 'https://openrouter.ai/api/v1'
+      },
+      local: {
+        name: '本地模型',
+        defaultModel: 'local-model',
+        defaultUrl: LOCAL_MODEL_URL
+      }
+    }
+  });
+});
 
 // 根路径服务主页
 app.get('/', (_, res) => {

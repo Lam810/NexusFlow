@@ -46,6 +46,9 @@ type AnalysisConfig = {
   apiUrl: string
   apiKey?: string
   questionTemplate: string
+  provider?: 'qwen' | 'openai' | 'local' | 'openrouter'
+  model?: string
+  temperature?: number
 }
 type CondClause = {
   variable: string
@@ -299,10 +302,78 @@ function ChartWidget({ headers, rows }: { headers: string[]; rows: Array<Record<
   )
 }
 
+// 解析完整的分析结果，包含文本和表格
+function parseAnalysisResult(md: string): { analysisText: string; table: { headers: string[]; rows: Array<Record<string, string>> } | null } {
+  // 提取表格部分
+  const tableBlockMatch = md.match(/\|[^\n]+\|[\s\S]*?(?:\n\s*$|$)/)
+  let table: { headers: string[]; rows: Array<Record<string, string>> } | null = null
+  if (tableBlockMatch) {
+    const lines = tableBlockMatch[0]
+      .split('\n')
+      .map(l => l.trim())
+      .filter(l => l.startsWith('|') && l.endsWith('|'))
+
+    if (lines.length >= 2) {
+      const headerCells = lines[0]
+        .slice(1, -1)
+        .split('|')
+        .map(s => s.trim())
+      // 第二行通常是 --- 分割线，跳过
+      const dataLines = lines.slice(1).filter(l => !/^\|\s*-+/.test(l))
+      const rows: Array<Record<string, string>> = []
+      for (const l of dataLines) {
+        const cells = l.slice(1, -1).split('|').map(s => s.trim())
+        if (cells.length !== headerCells.length) continue
+        const row: Record<string, string> = {}
+        headerCells.forEach((h, idx) => (row[h] = cells[idx]))
+        rows.push(row)
+      }
+      if (headerCells.length > 0 && rows.length > 0) {
+        table = { headers: headerCells, rows }
+      }
+    }
+  }
+  
+  // 移除表格部分，保留分析文本
+  const analysisText = tableBlockMatch ? md.replace(tableBlockMatch[0], '').trim() : md
+  
+  return { analysisText, table }
+}
+
+// 分析结果组件
+function AnalysisResult({ content }: { content: string }) {
+  const { analysisText, table } = parseAnalysisResult(content)
+  
+  return (
+    <div className="analysis-result">
+      {analysisText && (
+        <div className="analysis-text" style={{ 
+          marginBottom: table ? '20px' : '0',
+          padding: '16px',
+          backgroundColor: '#f8f9fa',
+          borderRadius: '8px',
+          border: '1px solid #e9ecef'
+        }}>
+          <div 
+            style={{ 
+              lineHeight: '1.6',
+              fontSize: '14px',
+              color: '#333'
+            }}
+            dangerouslySetInnerHTML={{ __html: renderMarkdownToHtml(analysisText) }}
+          />
+        </div>
+      )}
+      {table && <ChartWidget headers={table.headers} rows={table.rows} />}
+    </div>
+  )
+}
+
 async function runFlow(
   query: string,
   nodes: Node[],
   edges: Edge[],
+  serverConfig: any,
   onStatus?: (nodeId: string, status: 'running' | 'done') => void,
   onOutput?: (nodeId: string, output: string) => void,
 ): Promise<RunContext> {
@@ -403,10 +474,24 @@ async function runFlow(
     }
     
     if (nodeType === 'analysis') {
-      const cfg = (node.data?.config || { apiUrl: '', apiKey: '', questionTemplate: '请对以下数据进行分析：{{query}}' }) as AnalysisConfig
+      const cfg = (node.data?.config || { 
+        apiUrl: serverConfig?.providers?.qwen?.defaultUrl || 'https://dashscope.aliyuncs.com/compatible-mode/v1', 
+        apiKey: '', 
+        questionTemplate: '请对以下数据进行分析：{{query}}',
+        provider: 'qwen',
+        model: serverConfig?.providers?.qwen?.defaultModel || 'qwen-plus',
+        temperature: 0.2
+      }) as AnalysisConfig
       const question = renderTemplate(cfg.questionTemplate || '{{query}}', ctx.variables)
       let text = ''
-      await sseStream('/api/analysis-stream', { apiUrl: cfg.apiUrl, apiKey: cfg.apiKey, question }, (delta) => {
+      await sseStream('/api/analysis-stream', { 
+        apiUrl: cfg.apiUrl, 
+        apiKey: cfg.apiKey, 
+        question,
+        provider: cfg.provider || 'qwen',
+        model: cfg.model || 'qwen-plus',
+        temperature: cfg.temperature || 0.2
+      }, (delta) => {
         text += delta
         if (onOutput) onOutput(nodeId, text)
       })
@@ -492,6 +577,15 @@ export default function App() {
   const [previewOpen, setPreviewOpen] = useState(true)
   const [configOpen, setConfigOpen] = useState(false)
   const [showNewNodeMenu, setShowNewNodeMenu] = useState(false)
+  const [serverConfig, setServerConfig] = useState(null)
+
+  // 加载服务器配置
+  React.useEffect(() => {
+    fetch('/api/config')
+      .then(res => res.json())
+      .then(config => setServerConfig(config))
+      .catch(err => console.error('Failed to load server config:', err))
+  }, [])
 
   // 从 nodes 数组和 selectedNodeId 动态获取当前选中的节点
   const selected = useMemo(() => {
@@ -529,7 +623,7 @@ export default function App() {
       }
       // 清理上一次的进度边样式
       setEdges((eds) => eds.map(e => ({ ...e, animated: false, style: { ...(e.style || {}), strokeDasharray: '0' } })))
-      const ctx = await runFlow(question, nodes, edges, (nodeId, status) => {
+      const ctx = await runFlow(question, nodes, edges, serverConfig, (nodeId, status) => {
         // 标记节点状态
         setNodes((ns) => ns.map(n => n.id === nodeId ? { ...n, data: { ...n.data, runtimeStatus: status } } : n))
         // 以“进度=虚线动画边”显示：高亮指向该节点的所有入边
@@ -672,7 +766,14 @@ export default function App() {
             icon: '📊',
             theme: 'theme-blue',
             handles: ['left', 'right'],
-            config: { apiUrl: '', apiKey: '', questionTemplate: '请对以下问题进行数据分析：{{query}}' } as AnalysisConfig
+            config: { 
+              apiUrl: serverConfig?.providers?.qwen?.defaultUrl || 'https://dashscope.aliyuncs.com/compatible-mode/v1', 
+              apiKey: '', 
+              questionTemplate: '请对以下问题进行数据分析：{{query}}',
+              provider: 'qwen',
+              model: serverConfig?.providers?.qwen?.defaultModel || 'qwen-plus',
+              temperature: 0.2
+            } as AnalysisConfig
           }
         }
         break
@@ -769,9 +870,15 @@ export default function App() {
                         const raw = String(chat.answer || '')
                         const parsed = parseMarkdownTable(raw)
                         if (parsed) {
-                          return (
-                            <ChartWidget headers={parsed.headers} rows={parsed.rows} />
-                          )
+                          // 检查是否包含分析文本（除了表格外的内容）
+                          const { analysisText } = parseAnalysisResult(raw)
+                          if (analysisText) {
+                            // 如果有分析文本，使用新的AnalysisResult组件
+                            return <AnalysisResult content={raw} />
+                          } else {
+                            // 如果只有表格，使用原来的ChartWidget
+                            return <ChartWidget headers={parsed.headers} rows={parsed.rows} />
+                          }
                         }
                         return <div className="chat-text" dangerouslySetInnerHTML={{ __html: ((chat as any).meta?.label ? `<div style=\"font-size:12px;color:#64748b;margin-bottom:4px\"><strong>${(chat as any).meta.label}</strong> 输出</div>` : '') + renderMarkdownToHtml(raw) }} />
                       })()}
@@ -975,8 +1082,8 @@ export default function App() {
                 suggestedUrl = 'https://dashscope.aliyuncs.com/compatible-mode/v1'
               } else if (provider === 'openai') {
                 suggestedUrl = 'https://api.openai.com/v1'
-              } else if (provider === 'local') {
-                suggestedUrl = 'http://192.168.137.4:8000/v1/chat/completions'
+                } else if (provider === 'local') {
+                  suggestedUrl = serverConfig?.localModelUrl || 'http://192.168.137.37:8000/v1/chat/completions'
               } else if (provider === 'openrouter') {
                 suggestedUrl = 'https://openrouter.ai/api/v1'
               }
@@ -1136,7 +1243,14 @@ export default function App() {
       )
     }
     if (nodeType === 'analysis') {
-      const cfg: AnalysisConfig = selected.data?.config || { apiUrl: '', apiKey: '', questionTemplate: '请对以下问题进行数据分析：{{query}}' }
+      const cfg: AnalysisConfig = selected.data?.config || { 
+        apiUrl: serverConfig?.providers?.qwen?.defaultUrl || 'https://dashscope.aliyuncs.com/compatible-mode/v1', 
+        apiKey: '', 
+        questionTemplate: '请对以下问题进行数据分析：{{query}}',
+        provider: 'qwen',
+        model: serverConfig?.providers?.qwen?.defaultModel || 'qwen-plus',
+        temperature: 0.2
+      }
       return (
         <div className="panel">
           <div className="panel-title">数据分析配置</div>
@@ -1155,14 +1269,73 @@ export default function App() {
           }}>
             <strong>节点 ID:</strong> {selected.id}
           </div>
-          <label>分析服务 API URL：
+          
+          <label>API 提供商：
+            <select value={cfg.provider || 'qwen'} 
+              onChange={(e) => {
+                const provider = e.target.value as any;
+                const providerConfig = serverConfig?.providers?.[provider];
+                setNodes((ns) => ns.map(n => n.id === selected.id ? { 
+                  ...n, 
+                  data: { 
+                    ...n.data, 
+                    config: { 
+                      ...(selected.data?.config || {}), 
+                      provider,
+                      model: providerConfig?.defaultModel || 'qwen-plus',
+                      apiUrl: providerConfig?.defaultUrl || 'https://dashscope.aliyuncs.com/compatible-mode/v1'
+                    } 
+                  } 
+                } : n))
+              }}>
+              <option value="qwen">通义千问</option>
+              <option value="openai">OpenAI</option>
+              <option value="openrouter">OpenRouter</option>
+              <option value="local">本地模型</option>
+            </select>
+          </label>
+          
+          {cfg.provider === 'openrouter' ? (
+            <label>模型：
+              <select value={cfg.model || 'x-ai/grok-4-fast:free'} onChange={(e) => setNodes((ns) => ns.map(n => n.id === selected.id ? { ...n, data: { ...n.data, config: { ...(selected.data?.config || {}), model: e.target.value } } } : n))}>
+                <option value="x-ai/grok-4-fast:free">x-ai/grok-4-fast:free</option>
+                <option value="deepseek/deepseek-chat-v3.1:free">deepseek/deepseek-chat-v3.1:free</option>
+                <option value="tencent/hunyuan-a13b-instruct:free">tencent/hunyuan-a13b-instruct:free</option>
+                <option value="qwen/qwen3-235b-a22b:free">qwen/qwen3-235b-a22b:free</option>
+                <option value="microsoft/mai-ds-r1:free">microsoft/mai-ds-r1:free</option>
+              </select>
+            </label>
+          ) : cfg.provider === 'local' ? (
+            <label>模型：
+              <input 
+                value={cfg.model || 'local-model'}
+                disabled
+              />
+            </label>
+          ) : (
+            <label>模型名称：
+              <input value={cfg.model || (cfg.provider === 'openai' ? 'gpt-4o' : 'qwen-plus')}
+                onChange={(e) => setNodes((ns) => ns.map(n => n.id === selected.id ? { ...n, data: { ...n.data, config: { ...(selected.data?.config || {}), model: e.target.value } } } : n))} 
+                placeholder={cfg.provider === 'openai' ? 'gpt-4o' : 'qwen-plus'} />
+            </label>
+          )}
+          
+          <label>温度 (0-1)：
+            <input type="number" min="0" max="1" step="0.1" value={cfg.temperature || 0.2}
+              onChange={(e) => setNodes((ns) => ns.map(n => n.id === selected.id ? { ...n, data: { ...n.data, config: { ...(selected.data?.config || {}), temperature: parseFloat(e.target.value) } } } : n))} />
+          </label>
+          
+          <label>API URL：
             <input value={cfg.apiUrl}
               onChange={(e) => setNodes((ns) => ns.map(n => n.id === selected.id ? { ...n, data: { ...n.data, config: { ...(selected.data?.config || {}), apiUrl: e.target.value } } } : n))} />
           </label>
-          <label>API Key（可选）：
+          
+          <label>API Key（{cfg.provider === 'local' ? '不需要' : '需要'}）：
             <input type="password" value={cfg.apiKey || ''}
-              onChange={(e) => setNodes((ns) => ns.map(n => n.id === selected.id ? { ...n, data: { ...n.data, config: { ...(selected.data?.config || {}), apiKey: e.target.value } } } : n))} />
+              onChange={(e) => setNodes((ns) => ns.map(n => n.id === selected.id ? { ...n, data: { ...n.data, config: { ...(selected.data?.config || {}), apiKey: e.target.value } } } : n))} 
+              disabled={cfg.provider === 'local'} />
           </label>
+          
           <label>问题模板：
             <textarea value={cfg.questionTemplate}
               onChange={(e) => setNodes((ns) => ns.map(n => n.id === selected.id ? { ...n, data: { ...n.data, config: { ...(selected.data?.config || {}), questionTemplate: e.target.value } } } : n))} />

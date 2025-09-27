@@ -4,6 +4,12 @@ AI-Flow 是一个最小化工作流工具，使用 React Flow 实现可视化节
 
 ## 更新日志
 
+- 2025-09-27：
+  - 新增数据分析插件：支持多种LLM提供商（Qwen、OpenAI、OpenRouter、本地模型），提供数据分析建议和可视化图表。
+  - 新增环境变量配置：支持通过.env文件配置本地模型URL，LLM和数据分析插件统一使用环境变量配置。
+  - 新增多模型选择：OpenRouter支持多个模型选择，本地模型支持自定义URL配置。
+  - 优化流式输出：数据分析插件支持流式响应，实时显示分析结果和图表。
+
 - 2025-09-25：
   - 新增向量数据库（SQLite3 + better-sqlite3）持久化与管理接口：上传、搜索、文件/文档列表、统计等。
   - 新增流式输出：支持 LLM 与数据分析节点的 SSE 流式响应，聊天区实时增量显示。
@@ -13,7 +19,8 @@ AI-Flow 是一个最小化工作流工具，使用 React Flow 实现可视化节
 
 - **可视化工作流**: 使用 React Flow 拖拽节点、连接边，构建自定义 AI 流程。
 - **知识库管理**: 使用 SQLite3 持久化存储文本嵌入（使用 Qwen text-embedding-v3），支持文件/文本上传、余弦相似度检索、文件管理。
-- **LLM 集成**: 支持 Qwen（阿里云百炼）和 OpenAI 兼容的聊天完成，模板化提示词。
+- **LLM 集成**: 支持多种LLM提供商（Qwen、OpenAI、OpenRouter、本地模型），支持流式输出和模板化提示词。
+- **数据分析**: 智能数据分析插件，支持多种LLM提供商，提供分析建议和可视化图表（柱状图、折线图、饼图）。
 - **条件分支**: 基于变量的 if/elif/else 逻辑，支持多种运算符（包含、等于、空值等）。
 - **HTTP 请求**: 代理外部 API 调用，支持变量替换、JSON/文本 body。
 - **直接回复**: 使用 LLM 输出或模板渲染最终答案。
@@ -52,12 +59,29 @@ cd client && npm install && cd ..
 ### 配置环境变量
 
 - 复制 `server/.env.example` 为 `server/.env`（如果不存在，创建并添加）：
-  ```
-  QWEN_API_KEY=sk-your-api-key-here
+  ```bash
+  # 通义千问 API Key (必需)
+  QWEN_API_KEY=sk-your-qwen-api-key-here
+  
+  # OpenAI API Key (可选)
   OPENAI_API_KEY=sk-your-openai-key-here
+  
+  # OpenRouter API Key (可选)  
   OPENROUTER_API_KEY=sk-your-openrouter-key-here
+  
+  # 本地模型服务URL (可选，默认值已设置)
+  LOCAL_MODEL_URL=http://xxx.xxx.xxx.xxx:8000/v1/chat/completions
+  
+  # 服务器端口 (可选，默认5757)
   PORT=5757
   ```
+
+**环境变量说明**：
+- `QWEN_API_KEY`: 通义千问API密钥，从[阿里云百炼控制台](https://bailian.console.aliyun.com/)获取
+- `OPENAI_API_KEY`: OpenAI API密钥，可选
+- `OPENROUTER_API_KEY`: OpenRouter API密钥，可选
+- `LOCAL_MODEL_URL`: 本地模型服务地址，支持自定义URL配置
+- `PORT`: 服务器端口，默认5757
 
 ### 启动服务
 
@@ -92,7 +116,8 @@ cd client && npm run dev
   - **开始**: 入口节点，注入 { query } 变量。
   - **条件分支**: 配置 if/elif/else 条件（变量如 query.kb_text，支持 contains/is_empty 等）。输出分支变量 condition.branch。
   - **知识检索**: 配置 topK (默认 3)，检索相关片段到 kb_text 变量。
-  - **LLM**: 配置模型 (qwen-plus)、温度、system/user prompt (模板: {{query}}, {{kb_text}}, {{http_text}}, {{llm_text_节点ID}})。输出 llm_text_节点ID。
+  - **LLM**: 支持多种提供商（Qwen、OpenAI、OpenRouter、本地模型），配置模型、温度、API Key、API URL、system/user prompt (模板: {{query}}, {{kb_text}}, {{http_text}}, {{llm_text_节点ID}})。输出 llm_text_节点ID。
+  - **数据分析**: 智能数据分析插件，支持多种LLM提供商，提供分析建议和可视化图表（柱状图、折线图、饼图），支持流式输出。
   - **HTTP 请求**: 配置方法/URL/headers/body (支持 {var} 替换)，输出 http_data/http_text。
   - **直接回复**: 模式 (LLM 输出 或 模板 {{llm_text}}/{{query}} 等)，设置最终 answer。
 
@@ -109,8 +134,28 @@ cd client && npm run dev
 扩展示例：
 - 添加 HTTP 节点调用外部 API (e.g., URL: https://api.example.com/{user_id})。
 - 多 LLM: 第一个 LLM 输出到变量，第二个 prompt 使用 {{llm_text_first}}。
+- 数据分析工作流：开始 → 数据分析 → 直接回复，用于分析数据并生成可视化图表。
 
-### 4. 聊天与历史
+### 4. 数据分析插件使用
+
+数据分析插件支持多种LLM提供商，提供智能数据分析功能：
+
+- **配置选项**：
+  - API提供商：Qwen、OpenAI、OpenRouter、本地模型
+  - 模型选择：根据提供商自动推荐模型
+  - 温度设置：控制分析结果的创造性（0-1）
+  - 问题模板：自定义分析问题模板
+
+- **输出格式**：
+  - 分析结论：Markdown格式的分析文本
+  - 可视化图表：自动生成柱状图、折线图、饼图
+  - 数据表格：结构化的数据展示
+
+- **环境变量配置**：
+  - 本地模型URL可通过 `LOCAL_MODEL_URL` 环境变量配置
+  - 支持自定义API Key和API URL
+
+### 5. 聊天与历史
 
 - 支持连续对话，历史保存在前端状态。
 - 清除记录按钮重置历史。
@@ -138,8 +183,12 @@ cd client && npm run dev
   - `package.json`: 依赖 (express, cors, multer, node-fetch, dotenv, better-sqlite3)，脚本: `npm run dev` (nodemon)。
   - `src/index.js`: 主服务器，路由:
     - `/api/vector/*`: 向量数据库管理 (上传/搜索/文件管理/统计)。
-    - `/api/chat`: LLM 调用 (Qwen/OpenAI 兼容)。
+    - `/api/chat`: LLM 调用 (Qwen/OpenAI/OpenRouter/本地模型)。
+    - `/api/chat-stream`: LLM 流式调用。
+    - `/api/analysis`: 数据分析调用。
+    - `/api/analysis-stream`: 数据分析流式调用。
     - `/api/http-request`: 代理 HTTP (变量替换)。
+    - `/api/config`: 获取服务器配置信息。
     - `/api/health`: 健康检查。
   - `src/vectorDB.js`: SQLite3 向量数据库类，支持文档存储、相似性搜索。
   - `vector_knowledge.db`: SQLite3 数据库文件 (自动创建)。
@@ -158,7 +207,11 @@ cd client && npm run dev
 
 ### 其他 API
 - **POST /api/chat**: { messages, model, temperature, apiKey?, apiUrl?, provider } → OpenAI 格式响应。
+- **POST /api/chat-stream**: { messages, model, temperature, apiKey?, apiUrl?, provider } → SSE 流式响应。
+- **POST /api/analysis**: { apiUrl, apiKey, question, provider, model, temperature } → 数据分析结果。
+- **POST /api/analysis-stream**: { apiUrl, apiKey, question, provider, model, temperature } → SSE 流式数据分析。
 - **POST /api/http-request**: { method, url, headers, body, variables } → { status_code, content, json }
+- **GET /api/config**: → { localModelUrl, providers } 服务器配置信息。
 - **GET /api/health**: → { ok: true }
 
 所有 API 使用 POST，JSON body，CORS 启用。
@@ -179,6 +232,9 @@ cd client && npm run dev
 - **跨域错误**: 确保前端代理或 CORS 配置正确 (默认启用)。
 - **节点不执行**: 检查边连接；条件分支需匹配 sourceHandle (if/else)。
 - **端口冲突**: 确保后端运行在 5757 端口，前端代理配置正确。
+- **本地模型连接失败**: 检查 `LOCAL_MODEL_URL` 环境变量配置，确保本地模型服务正在运行。
+- **数据分析无结果**: 检查LLM提供商配置，确保API Key和模型设置正确。
+- **图表不显示**: 确保数据分析结果包含表格数据，检查Markdown表格格式。
 
 ## 参考与贡献
 
