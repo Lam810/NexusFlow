@@ -1,4 +1,4 @@
-# Dify-like minimal workflow (React Flow + Express)
+# AI minimal workflow (React Flow + Express)
 
 ## 快速开始
 

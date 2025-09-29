@@ -10,10 +10,37 @@ class VectorDB {
   }
 
   init() {
+    // 创建用户表
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS users (
+        id TEXT PRIMARY KEY,
+        username TEXT UNIQUE NOT NULL,
+        email TEXT UNIQUE NOT NULL,
+        password_hash TEXT NOT NULL,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+
+    // 创建工作流表
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS workflows (
+        id TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL,
+        name TEXT NOT NULL,
+        nodes TEXT NOT NULL,
+        edges TEXT NOT NULL,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
+      )
+    `);
+
     // 创建文档表
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS documents (
         id TEXT PRIMARY KEY,
+        user_id TEXT,
         filename TEXT,
         original_text TEXT,
         chunk_index INTEGER,
@@ -21,7 +48,8 @@ class VectorDB {
         embedding BLOB,
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
         file_size INTEGER,
-        file_type TEXT
+        file_type TEXT,
+        FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
       )
     `);
 
@@ -29,12 +57,14 @@ class VectorDB {
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS files (
         id TEXT PRIMARY KEY,
+        user_id TEXT,
         filename TEXT,
         original_text TEXT,
         file_size INTEGER,
         file_type TEXT,
         chunk_count INTEGER,
-        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
       )
     `);
 
@@ -190,6 +220,91 @@ class VectorDB {
       nb += b[i] * b[i];
     }
     return dot / (Math.sqrt(na) * Math.sqrt(nb) + 1e-8);
+  }
+
+  // 用户管理方法
+  async createUser(username, email, passwordHash) {
+    const id = `user_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+    const stmt = this.db.prepare(`
+      INSERT INTO users (id, username, email, password_hash)
+      VALUES (?, ?, ?, ?)
+    `);
+    
+    try {
+      stmt.run(id, username, email, passwordHash);
+      return { id, username, email };
+    } catch (error) {
+      if (error.code === 'SQLITE_CONSTRAINT_UNIQUE') {
+        throw new Error('用户名或邮箱已存在');
+      }
+      throw error;
+    }
+  }
+
+  async getUserByUsername(username) {
+    const stmt = this.db.prepare('SELECT * FROM users WHERE username = ?');
+    return stmt.get(username);
+  }
+
+  async getUserByEmail(email) {
+    const stmt = this.db.prepare('SELECT * FROM users WHERE email = ?');
+    return stmt.get(email);
+  }
+
+  async getUserById(id) {
+    const stmt = this.db.prepare('SELECT * FROM users WHERE id = ?');
+    return stmt.get(id);
+  }
+
+  // 工作流管理方法
+  async saveWorkflow(userId, workflowId, name, nodes, edges) {
+    const stmt = this.db.prepare(`
+      INSERT OR REPLACE INTO workflows (id, user_id, name, nodes, edges, updated_at)
+      VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+    `);
+    
+    stmt.run(workflowId, userId, name, JSON.stringify(nodes), JSON.stringify(edges));
+    return { id: workflowId, name, nodes, edges };
+  }
+
+  async getWorkflows(userId) {
+    const stmt = this.db.prepare(`
+      SELECT id, name, nodes, edges, created_at, updated_at 
+      FROM workflows 
+      WHERE user_id = ? 
+      ORDER BY updated_at DESC
+    `);
+    
+    const workflows = stmt.all(userId);
+    return workflows.map(w => ({
+      ...w,
+      nodes: JSON.parse(w.nodes),
+      edges: JSON.parse(w.edges)
+    }));
+  }
+
+  async getWorkflow(userId, workflowId) {
+    const stmt = this.db.prepare(`
+      SELECT id, name, nodes, edges, created_at, updated_at 
+      FROM workflows 
+      WHERE id = ? AND user_id = ?
+    `);
+    
+    const workflow = stmt.get(workflowId, userId);
+    if (workflow) {
+      return {
+        ...workflow,
+        nodes: JSON.parse(workflow.nodes),
+        edges: JSON.parse(workflow.edges)
+      };
+    }
+    return null;
+  }
+
+  async deleteWorkflow(userId, workflowId) {
+    const stmt = this.db.prepare('DELETE FROM workflows WHERE id = ? AND user_id = ?');
+    const result = stmt.run(workflowId, userId);
+    return result.changes > 0;
   }
 
   // 关闭数据库连接

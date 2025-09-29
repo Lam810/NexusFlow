@@ -6,6 +6,8 @@ import multer from 'multer';
 import fs from 'fs';
 import path from 'path';
 import VectorDB from './vectorDB.js';
+import jwt from 'jsonwebtoken';
+import bcrypt from 'bcryptjs';
 
 const app = express();
 app.use(cors());
@@ -21,12 +23,31 @@ const QWEN_BASE_URL = 'https://dashscope.aliyuncs.com/compatible-mode/v1';
 const QWEN_API_KEY = process.env.QWEN_API_KEY;
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY;
-const LOCAL_MODEL_URL = process.env.LOCAL_MODEL_URL || LOCAL_MODEL_URL;
+const LOCAL_MODEL_URL = process.env.LOCAL_MODEL_URL || 'http://192.168.137.37:8000/v1/chat/completions';
+const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key-change-in-production';
 
 if (!QWEN_API_KEY) console.warn('QWEN_API_KEY not set. Set it in server/.env');
 if (!OPENAI_API_KEY) console.warn('OPENAI_API_KEY not set. Set it in server/.env');
 if (!OPENROUTER_API_KEY) console.warn('OPENROUTER_API_KEY not set. Set it in server/.env');
 console.log(`Local model URL: ${LOCAL_MODEL_URL}`);
+
+// 认证中间件
+const authenticateToken = (req, res, next) => {
+  const authHeader = req.headers['authorization'];
+  const token = authHeader && authHeader.split(' ')[1];
+
+  if (!token) {
+    return res.status(401).json({ error: '访问令牌缺失' });
+  }
+
+  jwt.verify(token, JWT_SECRET, (err, user) => {
+    if (err) {
+      return res.status(403).json({ error: '访问令牌无效' });
+    }
+    req.user = user;
+    next();
+  });
+};
 
 async function createEmbedding(input) {
   const res = await fetch(`${QWEN_BASE_URL}/embeddings`, {
@@ -304,12 +325,31 @@ app.post('/api/chat', async (req, res) => {
 
 app.post('/api/http-request', async (req, res) => {
   try {
-    const { method, url, headers = {}, body, variables = {} } = req.body;
+    const { 
+      method, 
+      url, 
+      headers = {}, 
+      body, 
+      variables = {}, 
+      auth = { type: 'none' },
+      advanced = { timeout: 30000, retries: 0, followRedirects: true, validateSSL: true },
+      authQueryParams = [],
+      authBodyParams = []
+    } = req.body;
     
     // Replace variables in URL
     let formattedUrl = url;
     for (const [key, value] of Object.entries(variables)) {
       formattedUrl = formattedUrl.replace(new RegExp(`{${key}}`, 'g'), value);
+    }
+    
+    // Add auth query parameters to URL
+    if (authQueryParams.length > 0) {
+      const urlObj = new URL(formattedUrl);
+      authQueryParams.forEach(param => {
+        urlObj.searchParams.append(param.key, param.value);
+      });
+      formattedUrl = urlObj.toString();
     }
     
     // Replace variables in headers
@@ -320,6 +360,11 @@ app.post('/api/http-request', async (req, res) => {
         formattedValue = formattedValue.replace(new RegExp(`{${varKey}}`, 'g'), varValue);
       }
       formattedHeaders[key] = formattedValue;
+    }
+    
+    // Add custom User-Agent if specified
+    if (advanced.customUserAgent) {
+      formattedHeaders['User-Agent'] = advanced.customUserAgent;
     }
     
     // Replace variables in body
@@ -333,11 +378,55 @@ app.post('/api/http-request', async (req, res) => {
         return variables[key] || match;
       }));
     }
+    
+    // Add auth body parameters
+    if (authBodyParams.length > 0) {
+      if (typeof formattedBody === 'string') {
+        try {
+          const bodyObj = JSON.parse(formattedBody);
+          authBodyParams.forEach(param => {
+            bodyObj[param.key] = param.value;
+          });
+          formattedBody = JSON.stringify(bodyObj);
+        } catch (e) {
+          // If body is not JSON, append as form data
+          const formData = new URLSearchParams();
+          authBodyParams.forEach(param => {
+            formData.append(param.key, param.value);
+          });
+          formattedBody = formData.toString();
+          formattedHeaders['Content-Type'] = 'application/x-www-form-urlencoded';
+        }
+      } else if (typeof formattedBody === 'object') {
+        authBodyParams.forEach(param => {
+          formattedBody[param.key] = param.value;
+        });
+      }
+    }
 
     const fetch = (await import('node-fetch')).default;
     const upperMethod = String(method || 'GET').toUpperCase();
 
-    const options = { method: upperMethod, headers: formattedHeaders };
+    const options = { 
+      method: upperMethod, 
+      headers: formattedHeaders,
+      timeout: advanced.timeout || 30000
+    };
+    
+    // Handle redirects
+    if (advanced.followRedirects !== false) {
+      options.redirect = 'follow';
+    } else {
+      options.redirect = 'manual';
+    }
+    
+    // Handle SSL validation
+    if (advanced.validateSSL === false) {
+      // Note: In production, you might want to use a proper SSL configuration
+      // This is a simplified approach for development/testing
+      process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
+    }
+    
     if (upperMethod !== 'GET' && upperMethod !== 'HEAD' && formattedBody) {
       options.body = typeof formattedBody === 'object' ? JSON.stringify(formattedBody) : formattedBody;
       if (typeof formattedBody === 'object' && !options.headers['Content-Type']) {
@@ -345,24 +434,83 @@ app.post('/api/http-request', async (req, res) => {
       }
     }
 
-    const response = await fetch(formattedUrl, options);
-    
-    const content = await response.text();
-    let json = null;
-    try {
-      json = JSON.parse(content);
-    } catch (e) {
-      // Not JSON
+    // Retry logic
+    let lastError;
+    for (let attempt = 0; attempt <= (advanced.retries || 0); attempt++) {
+      try {
+        const response = await fetch(formattedUrl, options);
+        
+        const content = await response.text();
+        let json = null;
+        try {
+          json = JSON.parse(content);
+        } catch (e) {
+          // Not JSON
+        }
+        
+        res.json({
+          status_code: response.status,
+          headers: Object.fromEntries(response.headers.entries()),
+          content,
+          json,
+          success: response.ok,
+          attempt: attempt + 1
+        });
+        return;
+      } catch (error) {
+        lastError = error;
+        if (attempt < (advanced.retries || 0)) {
+          // Wait before retry (exponential backoff)
+          await new Promise(resolve => setTimeout(resolve, Math.pow(2, attempt) * 1000));
+        }
+      }
     }
     
-    res.json({
-      status_code: response.status,
-      headers: Object.fromEntries(response.headers.entries()),
-      content,
-      json,
-      success: response.ok
-    });
+    throw lastError;
   } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// OAuth2 token endpoint
+app.post('/api/oauth2/token', async (req, res) => {
+  try {
+    const { clientId, clientSecret, tokenUrl, scope, grantType = 'client_credentials' } = req.body;
+    
+    if (!clientId || !clientSecret || !tokenUrl) {
+      return res.status(400).json({ error: 'Missing required OAuth2 parameters' });
+    }
+    
+    const fetch = (await import('node-fetch')).default;
+    
+    // Prepare token request body
+    const tokenBody = new URLSearchParams();
+    tokenBody.append('grant_type', grantType);
+    tokenBody.append('client_id', clientId);
+    tokenBody.append('client_secret', clientSecret);
+    
+    if (scope) {
+      tokenBody.append('scope', scope);
+    }
+    
+    const response = await fetch(tokenUrl, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+        'Accept': 'application/json'
+      },
+      body: tokenBody.toString()
+    });
+    
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`OAuth2 token request failed: ${response.status} ${errorText}`);
+    }
+    
+    const tokenData = await response.json();
+    res.json(tokenData);
+  } catch (e) {
+    console.error('OAuth2 token error:', e);
     res.status(500).json({ error: e.message });
   }
 });
@@ -543,6 +691,152 @@ app.post('/api/chat-stream', async (req, res) => {
     try {
       res.status(500).end(`data: {"error":"${String(e.message || e)}"}\n\n`);
     } catch {}
+  }
+});
+
+// 认证相关API
+app.post('/api/auth/register', async (req, res) => {
+  try {
+    const { username, email, password } = req.body;
+    
+    if (!username || !email || !password) {
+      return res.status(400).json({ error: '用户名、邮箱和密码都是必需的' });
+    }
+
+    // 检查用户是否已存在
+    const existingUser = await vectorDB.getUserByUsername(username) || await vectorDB.getUserByEmail(email);
+    if (existingUser) {
+      return res.status(400).json({ error: '用户名或邮箱已存在' });
+    }
+
+    // 加密密码
+    const passwordHash = await bcrypt.hash(password, 10);
+    
+    // 创建用户
+    const user = await vectorDB.createUser(username, email, passwordHash);
+    
+    // 生成JWT令牌
+    const token = jwt.sign(
+      { id: user.id, username: user.username, email: user.email },
+      JWT_SECRET,
+      { expiresIn: '7d' }
+    );
+
+    res.json({ 
+      message: '注册成功', 
+      token, 
+      user: { id: user.id, username: user.username, email: user.email }
+    });
+  } catch (error) {
+    console.error('注册错误:', error);
+    res.status(500).json({ error: error.message || '注册失败' });
+  }
+});
+
+app.post('/api/auth/login', async (req, res) => {
+  try {
+    const { username, password } = req.body;
+    
+    if (!username || !password) {
+      return res.status(400).json({ error: '用户名和密码都是必需的' });
+    }
+
+    // 查找用户
+    const user = await vectorDB.getUserByUsername(username);
+    if (!user) {
+      return res.status(401).json({ error: '用户名或密码错误' });
+    }
+
+    // 验证密码
+    const isValidPassword = await bcrypt.compare(password, user.password_hash);
+    if (!isValidPassword) {
+      return res.status(401).json({ error: '用户名或密码错误' });
+    }
+
+    // 生成JWT令牌
+    const token = jwt.sign(
+      { id: user.id, username: user.username, email: user.email },
+      JWT_SECRET,
+      { expiresIn: '7d' }
+    );
+
+    res.json({ 
+      message: '登录成功', 
+      token, 
+      user: { id: user.id, username: user.username, email: user.email }
+    });
+  } catch (error) {
+    console.error('登录错误:', error);
+    res.status(500).json({ error: '登录失败' });
+  }
+});
+
+// 工作流管理API
+app.get('/api/workflows', authenticateToken, async (req, res) => {
+  try {
+    const workflows = await vectorDB.getWorkflows(req.user.id);
+    res.json({ workflows });
+  } catch (error) {
+    console.error('获取工作流错误:', error);
+    res.status(500).json({ error: '获取工作流失败' });
+  }
+});
+
+app.post('/api/workflows', authenticateToken, async (req, res) => {
+  try {
+    const { name, nodes, edges } = req.body;
+    const workflowId = `workflow_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+    
+    const workflow = await vectorDB.saveWorkflow(req.user.id, workflowId, name, nodes, edges);
+    res.json({ message: '工作流保存成功', workflow });
+  } catch (error) {
+    console.error('保存工作流错误:', error);
+    res.status(500).json({ error: '保存工作流失败' });
+  }
+});
+
+app.put('/api/workflows/:id', authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { name, nodes, edges } = req.body;
+    
+    const workflow = await vectorDB.saveWorkflow(req.user.id, id, name, nodes, edges);
+    res.json({ message: '工作流更新成功', workflow });
+  } catch (error) {
+    console.error('更新工作流错误:', error);
+    res.status(500).json({ error: '更新工作流失败' });
+  }
+});
+
+app.get('/api/workflows/:id', authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const workflow = await vectorDB.getWorkflow(req.user.id, id);
+    
+    if (!workflow) {
+      return res.status(404).json({ error: '工作流不存在' });
+    }
+    
+    res.json({ workflow });
+  } catch (error) {
+    console.error('获取工作流错误:', error);
+    res.status(500).json({ error: '获取工作流失败' });
+  }
+});
+
+app.delete('/api/workflows/:id', authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const success = await vectorDB.deleteWorkflow(req.user.id, id);
+    
+    if (!success) {
+      return res.status(404).json({ error: '工作流不存在' });
+    }
+    
+    res.json({ message: '工作流删除成功' });
+  } catch (error) {
+    console.error('删除工作流错误:', error);
+    res.status(500).json({ error: '删除工作流失败' });
   }
 });
 

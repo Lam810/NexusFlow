@@ -4,6 +4,13 @@ AI-Flow 是一个最小化工作流工具，使用 React Flow 实现可视化节
 
 ## 更新日志
 
+- 2025-01-25：
+  - 增强HTTP请求插件：支持多种鉴权方式（Bearer Token、API Key、Basic Auth、OAuth2.0、自定义鉴权）。
+  - 新增高级配置：支持超时设置、重试机制、SSL验证、自定义User-Agent等。
+  - 优化用户体验：添加实时测试功能，支持变量替换，改进错误处理和响应显示。
+  - 简化OAuth2.0配置：支持直接使用Access Token，无需复杂的token获取流程。
+  - 完善用户认证系统：支持用户注册、登录、JWT令牌认证、工作流权限管理。
+
 - 2025-09-27：
   - 新增数据分析插件：支持多种LLM提供商（Qwen、OpenAI、OpenRouter、本地模型），提供数据分析建议和可视化图表。
   - 新增环境变量配置：支持通过.env文件配置本地模型URL，LLM和数据分析插件统一使用环境变量配置。
@@ -17,12 +24,13 @@ AI-Flow 是一个最小化工作流工具，使用 React Flow 实现可视化节
 
 ## 特性
 
+- **用户认证系统**: 完整的用户注册、登录、JWT令牌认证，支持工作流权限管理和用户隔离。
 - **可视化工作流**: 使用 React Flow 拖拽节点、连接边，构建自定义 AI 流程。
 - **知识库管理**: 使用 SQLite3 持久化存储文本嵌入（使用 Qwen text-embedding-v3），支持文件/文本上传、余弦相似度检索、文件管理。
 - **LLM 集成**: 支持多种LLM提供商（Qwen、OpenAI、OpenRouter、本地模型），支持流式输出和模板化提示词。
 - **数据分析**: 智能数据分析插件，支持多种LLM提供商，提供分析建议和可视化图表（柱状图、折线图、饼图）。
 - **条件分支**: 基于变量的 if/elif/else 逻辑，支持多种运算符（包含、等于、空值等）。
-- **HTTP 请求**: 代理外部 API 调用，支持变量替换、JSON/文本 body。
+- **HTTP 请求**: 强大的HTTP请求插件，支持多种鉴权方式（Bearer Token、API Key、Basic Auth、OAuth2.0、自定义鉴权）、变量替换、JSON/文本 body、高级配置（超时、重试、SSL验证等）。
 - **直接回复**: 使用 LLM 输出或模板渲染最终答案。
 - **聊天界面**: 运行工作流后显示历史对话，支持导入示例知识。
 - **持久化存储**: SQLite3 数据库存储向量嵌入，支持文件管理、统计查询，文本分块（800 字符，100 重叠），文件大小限 500KB。
@@ -118,7 +126,7 @@ cd client && npm run dev
   - **知识检索**: 配置 topK (默认 3)，检索相关片段到 kb_text 变量。
   - **LLM**: 支持多种提供商（Qwen、OpenAI、OpenRouter、本地模型），配置模型、温度、API Key、API URL、system/user prompt (模板: {{query}}, {{kb_text}}, {{http_text}}, {{llm_text_节点ID}})。输出 llm_text_节点ID。
   - **数据分析**: 智能数据分析插件，支持多种LLM提供商，提供分析建议和可视化图表（柱状图、折线图、饼图），支持流式输出。
-  - **HTTP 请求**: 配置方法/URL/headers/body (支持 {var} 替换)，输出 http_data/http_text。
+  - **HTTP 请求**: 配置方法/URL/headers/body (支持 {var} 替换)，支持多种鉴权方式，输出 http_data/http_text。
   - **直接回复**: 模式 (LLM 输出 或 模板 {{llm_text}}/{{query}} 等)，设置最终 answer。
 
 - **运行工作流**:
@@ -136,7 +144,52 @@ cd client && npm run dev
 - 多 LLM: 第一个 LLM 输出到变量，第二个 prompt 使用 {{llm_text_first}}。
 - 数据分析工作流：开始 → 数据分析 → 直接回复，用于分析数据并生成可视化图表。
 
-### 4. 数据分析插件使用
+### 4. HTTP请求插件使用
+
+HTTP请求插件支持多种鉴权方式和高级配置，适用于各种API调用场景：
+
+#### 支持的鉴权方式
+
+- **无鉴权**: 直接访问公开API
+- **Bearer Token**: 在Authorization头中添加Bearer token
+- **API Key**: 支持Header、Query参数、Body三种位置
+- **Basic Auth**: 用户名密码基础认证
+- **OAuth2.0**: 直接使用Access Token（需预先获取）
+- **自定义鉴权**: 自定义Header配置
+
+#### 配置示例
+
+**Bearer Token认证**:
+```
+URL: http://127.0.0.1:8000/secret
+鉴权方式: Bearer Token
+Token: mysecrettoken
+```
+
+**API Key认证**:
+```
+URL: http://localhost:8000/api-key-query
+鉴权方式: API Key
+API Key: sk-1234567890abcdef
+Key位置: Query Parameter
+Key名称: api_key
+```
+
+**OAuth2.0认证**:
+```
+URL: http://localhost:8000/oauth/protected
+鉴权方式: OAuth2.0
+Access Token: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
+```
+
+#### 高级功能
+
+- **变量替换**: 支持在URL、Headers、Body中使用 `{{变量名}}` 进行动态替换
+- **测试功能**: 内置"发送请求"按钮，可实时测试配置
+- **响应处理**: 自动解析JSON响应，支持文本和二进制数据
+- **错误处理**: 详细的错误信息和状态码显示
+
+### 5. 数据分析插件使用
 
 数据分析插件支持多种LLM提供商，提供智能数据分析功能：
 
@@ -155,7 +208,39 @@ cd client && npm run dev
   - 本地模型URL可通过 `LOCAL_MODEL_URL` 环境变量配置
   - 支持自定义API Key和API URL
 
-### 5. 聊天与历史
+### 6. 用户认证系统
+
+AI-Flow 提供完整的用户认证系统，支持多用户环境下的工作流管理：
+
+#### 用户注册与登录
+
+- **注册功能**：
+  - 用户名、邮箱、密码注册
+  - 密码确认验证
+  - 用户名和邮箱唯一性检查
+  - 密码加密存储（bcryptjs）
+
+- **登录功能**：
+  - 用户名/密码登录
+  - JWT令牌认证（7天有效期）
+  - 自动登录状态保持
+  - 安全的登出功能
+
+#### 权限管理
+
+- **工作流隔离**：每个用户只能访问自己的工作流
+- **数据安全**：知识库、文档等数据按用户隔离
+- **API保护**：需要认证的API自动验证JWT令牌
+
+#### 使用流程
+
+1. **首次使用**：访问系统会自动跳转到登录界面
+2. **注册账户**：点击"注册"创建新账户
+3. **登录系统**：使用用户名和密码登录
+4. **工作流管理**：登录后可以创建、编辑、管理个人工作流
+5. **安全登出**：点击登出按钮安全退出系统
+
+### 7. 聊天与历史
 
 - 支持连续对话，历史保存在前端状态。
 - 清除记录按钮重置历史。
@@ -171,10 +256,14 @@ cd client && npm run dev
 
 - **client/**: React 前端 (Vite + TypeScript + React Flow)。
   - `package.json`: 依赖 (reactflow, @types 等)，脚本: `npm run dev`。
-  - `src/App.tsx`: 主组件，节点渲染、配置面板、工作流执行逻辑。
+  - `src/App.tsx`: 主组件，认证状态管理、视图切换、工作流管理。
+  - `src/Auth.tsx`: 用户认证组件，登录/注册界面。
+  - `src/WorkflowDashboard.tsx`: 工作流仪表板，工作流列表和管理。
+  - `src/WorkflowEditor.tsx`: 工作流编辑器，节点配置和执行。
+  - `src/WorkflowManager.tsx`: 工作流管理组件。
+  - `src/WorkflowCard.tsx`: 工作流卡片组件。
   - `src/main.tsx`: 入口，渲染 App。
-  - `src/index.js`: 可能为旧入口 (可忽略)。
-  - `src/styles.css`: 样式 (节点卡片、面板等)。
+  - `src/styles.css`: 样式 (节点卡片、面板、认证界面等)。
   - `index.html`: HTML 模板。
   - `vite.config.ts`: Vite 配置 (端口 5173)。
   - `_1 后缀文件`: 备份版本 (e.g., package_1.json)，可忽略。
@@ -182,12 +271,15 @@ cd client && npm run dev
 - **server/**: Express 后端。
   - `package.json`: 依赖 (express, cors, multer, node-fetch, dotenv, better-sqlite3)，脚本: `npm run dev` (nodemon)。
   - `src/index.js`: 主服务器，路由:
+    - `/api/auth/*`: 用户认证 (注册/登录/JWT验证)。
+    - `/api/workflows/*`: 工作流管理 (创建/读取/更新/删除)。
     - `/api/vector/*`: 向量数据库管理 (上传/搜索/文件管理/统计)。
     - `/api/chat`: LLM 调用 (Qwen/OpenAI/OpenRouter/本地模型)。
     - `/api/chat-stream`: LLM 流式调用。
     - `/api/analysis`: 数据分析调用。
     - `/api/analysis-stream`: 数据分析流式调用。
-    - `/api/http-request`: 代理 HTTP (变量替换)。
+    - `/api/http-request`: 代理 HTTP (变量替换，支持多种鉴权方式)。
+    - `/api/oauth2/token`: OAuth2.0 令牌获取。
     - `/api/config`: 获取服务器配置信息。
     - `/api/health`: 健康检查。
   - `src/vectorDB.js`: SQLite3 向量数据库类，支持文档存储、相似性搜索。
@@ -195,6 +287,17 @@ cd client && npm run dev
   - `uploads/`: 临时文件目录 (multer)。
 
 ## API 参考
+
+### 用户认证 API
+- **POST /api/auth/register**: { username, email, password } → { message, token, user }
+- **POST /api/auth/login**: { username, password } → { message, token, user }
+
+### 工作流管理 API
+- **GET /api/workflows**: (需要认证) → { workflows: [...] }
+- **POST /api/workflows**: (需要认证) { name, nodes, edges } → { workflowId, message }
+- **GET /api/workflows/:id**: (需要认证) → { workflow: {...} }
+- **PUT /api/workflows/:id**: (需要认证) { name, nodes, edges } → { message }
+- **DELETE /api/workflows/:id**: (需要认证) → { message }
 
 ### 向量数据库 API
 - **POST /api/vector/upload**: multipart (file) 或 { text, filename } → { ok, fileId, filename, inserted, total, results }
@@ -210,7 +313,8 @@ cd client && npm run dev
 - **POST /api/chat-stream**: { messages, model, temperature, apiKey?, apiUrl?, provider } → SSE 流式响应。
 - **POST /api/analysis**: { apiUrl, apiKey, question, provider, model, temperature } → 数据分析结果。
 - **POST /api/analysis-stream**: { apiUrl, apiKey, question, provider, model, temperature } → SSE 流式数据分析。
-- **POST /api/http-request**: { method, url, headers, body, variables } → { status_code, content, json }
+- **POST /api/http-request**: { method, url, headers, body, variables, auth, advanced } → { status_code, content, json }
+- **POST /api/oauth2/token**: { clientId, clientSecret, tokenUrl, scope?, grantType? } → { access_token, token_type, expires_in }
 - **GET /api/config**: → { localModelUrl, providers } 服务器配置信息。
 - **GET /api/health**: → { ok: true }
 
@@ -235,6 +339,11 @@ cd client && npm run dev
 - **本地模型连接失败**: 检查 `LOCAL_MODEL_URL` 环境变量配置，确保本地模型服务正在运行。
 - **数据分析无结果**: 检查LLM提供商配置，确保API Key和模型设置正确。
 - **图表不显示**: 确保数据分析结果包含表格数据，检查Markdown表格格式。
+- **HTTP请求失败**: 检查鉴权配置是否正确，确保API Key、Token等凭据有效。
+- **OAuth2认证失败**: 确保Access Token有效且未过期，检查Token格式是否正确。
+- **用户认证失败**: 检查用户名和密码是否正确，确保JWT令牌未过期。
+- **工作流访问被拒绝**: 确保已正确登录，检查工作流是否属于当前用户。
+- **注册失败**: 检查用户名和邮箱是否已被使用，确保密码符合要求。
 
 ## 参考与贡献
 

@@ -55,6 +55,16 @@ pre { white-space: pre-wrap; word-break: break-word; background: #ffffff; border
   height: 12px;
   border: 2px solid #fff;
   box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+  background: #8b5cf6 !important;
+  opacity: 1 !important;
+  visibility: visible !important;
+  z-index: 10;
+}
+
+/* 确保连接点始终可见 */
+.react-flow__node .react-flow__handle {
+  opacity: 1 !important;
+  visibility: visible !important;
 }
 .node-card .node-icon { width: 28px; height: 28px; display: grid; place-items: center; border-radius: 8px; background: #eef2ff; color: #4f46e5; font-size: 14px; }
 .node-card .node-content { display: grid; }
@@ -111,5 +121,116 @@ pre { white-space: pre-wrap; word-break: break-word; background: #ffffff; border
 .chart-table table { width: 100%; border-collapse: collapse; font-size: 13px; }
 .chart-table th, .chart-table td { border: 1px solid #e5e7eb; padding: 6px 8px; text-align: left; }
 .chart-table th { background: #f3f4f6; }
+
+/* HTTP请求配置样式 */
+.form-group {
+  margin-bottom: 20px;
+}
+
+.form-group label {
+  display: block;
+  margin-bottom: 8px;
+  font-weight: 600;
+  color: #2d3748;
+}
+
+.form-group input,
+.form-group select,
+.form-group textarea {
+  width: 100%;
+  padding: 12px;
+  border: 2px solid #e2e8f0;
+  border-radius: 8px;
+  font-size: 14px;
+  transition: border-color 0.3s ease;
+}
+
+.form-group input:focus,
+.form-group select:focus,
+.form-group textarea:focus {
+  outline: none;
+  border-color: #667eea;
+}
+
+.form-group textarea {
+  min-height: 100px;
+  resize: vertical;
+}
+
+.auth-fields {
+  display: none;
+}
+
+.auth-fields.active {
+  display: block;
+  animation: fadeIn 0.3s ease-in;
+}
+
+.button-group {
+  display: flex;
+  gap: 10px;
+  margin-top: 20px;
+}
+
+.btn {
+  padding: 12px 24px;
+  border: none;
+  border-radius: 8px;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.3s ease;
+}
+
+.btn-primary {
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  color: white;
+}
+
+.btn-primary:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 5px 15px rgba(102, 126, 234, 0.4);
+}
+
+.btn-secondary {
+  background: #e2e8f0;
+  color: #4a5568;
+}
+
+.btn-secondary:hover {
+  background: #cbd5e0;
+}
+
+.response-section {
+  margin-top: 20px;
+}
+
+.response-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 10px;
+}
+
+.response-title {
+  font-weight: 600;
+  color: #2d3748;
+}
+
+.response-content {
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  padding: 15px;
+  font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
+  font-size: 12px;
+  white-space: pre-wrap;
+  max-height: 300px;
+  overflow-y: auto;
+}
+
+.hidden {
+  display: none;
+}
 
 
