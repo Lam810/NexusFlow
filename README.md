@@ -4,6 +4,14 @@ AI-Flow 是一个最小化工作流工具，使用 React Flow 实现可视化节
 
 ## 更新日志
 
+- 2025-10-22：
+  - 扩展知识库文件格式支持：新增对Word、PDF、Excel、CSV、JSON、XML、HTML等12种文件格式的支持。
+  - 优化向量处理策略：实现结构化分块、滑动窗口分块、混合分块等多种智能分块算法。
+  - 增强向量搜索功能：支持向量搜索、关键词搜索、混合搜索三种模式，提供智能重排序和查询扩展。
+  - 新增智能纠错机制：提供搜索建议、查询优化、低相似度提示等智能辅助功能。
+  - 改进文件解析器：统一的文件解析接口，支持元数据提取和错误处理。
+  - 优化上传界面：支持多种文件格式上传，可配置分块参数，显示文件类型和元数据信息。
+
 - 2025-09-29：
   - 增强HTTP请求插件：支持多种鉴权方式（Bearer Token、API Key、Basic Auth、OAuth2.0、自定义鉴权）。
   - 新增高级配置：支持超时设置、重试机制、SSL验证、自定义User-Agent等。
@@ -26,14 +34,14 @@ AI-Flow 是一个最小化工作流工具，使用 React Flow 实现可视化节
 
 - **用户认证系统**: 完整的用户注册、登录、JWT令牌认证，支持工作流权限管理和用户隔离。
 - **可视化工作流**: 使用 React Flow 拖拽节点、连接边，构建自定义 AI 流程。
-- **知识库管理**: 使用 SQLite3 持久化存储文本嵌入（使用 Qwen text-embedding-v3），支持文件/文本上传、余弦相似度检索、文件管理。
+- **知识库管理**: 使用 SQLite3 持久化存储文本嵌入（使用 Qwen text-embedding-v3），支持多种文件格式上传（TXT、MD、DOCX、PDF、XLSX、CSV、JSON、XML、HTML等）、智能分块、余弦相似度检索、文件管理。
 - **LLM 集成**: 支持多种LLM提供商（Qwen、OpenAI、OpenRouter、本地模型），支持流式输出和模板化提示词。
 - **数据分析**: 智能数据分析插件，支持多种LLM提供商，提供分析建议和可视化图表（柱状图、折线图、饼图）。
 - **条件分支**: 基于变量的 if/elif/else 逻辑，支持多种运算符（包含、等于、空值等）。
 - **HTTP 请求**: 强大的HTTP请求插件，支持多种鉴权方式（Bearer Token、API Key、Basic Auth、OAuth2.0、自定义鉴权）、变量替换、JSON/文本 body、高级配置（超时、重试、SSL验证等）。
 - **直接回复**: 使用 LLM 输出或模板渲染最终答案。
 - **聊天界面**: 运行工作流后显示历史对话，支持导入示例知识。
-- **持久化存储**: SQLite3 数据库存储向量嵌入，支持文件管理、统计查询，文本分块（800 字符，100 重叠），文件大小限 500KB。
+- **持久化存储**: SQLite3 数据库存储向量嵌入，支持文件管理、统计查询，智能文本分块（可配置块大小、重叠度、最大块数），文件大小限 2MB。
 
 ## 快速开始
 
@@ -109,7 +117,9 @@ cd client && npm run dev
 ### 1. 导入知识
 
 - 上传自定义知识：
-  - 在知识检索节点配置面板：粘贴文本或上传 .txt 文件（自动分块向量化）。
+  - 在知识检索节点配置面板：粘贴文本或上传多种格式文件（自动解析和分块向量化）。
+  - 支持文件格式：TXT、MD、DOCX、PDF、XLSX、CSV、JSON、XML、HTML等12种格式。
+  - 智能分块：支持结构化分块、滑动窗口分块，可配置块大小、重叠度等参数。
   - 向量数据库 API: POST /api/vector/upload (multipart form, file 或 text)
 
 ### 2. 构建工作流
@@ -123,9 +133,9 @@ cd client && npm run dev
 - **节点类型**:
   - **开始**: 入口节点，注入 { query } 变量。
   - **条件分支**: 配置 if/elif/else 条件（变量如 query.kb_text，支持 contains/is_empty 等）。输出分支变量 condition.branch。
-  - **知识检索**: 配置 topK (默认 3)，检索相关片段到 kb_text 变量。
+  - **知识检索**: 配置 topK (默认 3)，支持多种搜索模式（向量搜索、关键词搜索、混合搜索），检索相关片段到 kb_text 变量。
   - **LLM**: 支持多种提供商（Qwen、OpenAI、OpenRouter、本地模型），配置模型、温度、API Key、API URL、system/user prompt (模板: {{query}}, {{kb_text}}, {{http_text}}, {{llm_text_节点ID}})。输出 llm_text_节点ID。
-  - **数据分析**: 智能数据分析插件，支持多种LLM提供商，提供分析建议和可视化图表（柱状图、折线图、饼图），支持流式输出。
+  - **数据分析**: 智能数据分析插件，支持多种LLM提供商，提供分析建议和可视化图表（柱状图、折线图、饼图），支持流式输出，支持多种文件格式上传和智能解析。
   - **HTTP 请求**: 配置方法/URL/headers/body (支持 {var} 替换)，支持多种鉴权方式，输出 http_data/http_text。
   - **直接回复**: 模式 (LLM 输出 或 模板 {{llm_text}}/{{query}} 等)，设置最终 answer。
 
@@ -143,6 +153,7 @@ cd client && npm run dev
 - 添加 HTTP 节点调用外部 API (e.g., URL: https://api.example.com/{user_id})。
 - 多 LLM: 第一个 LLM 输出到变量，第二个 prompt 使用 {{llm_text_first}}。
 - 数据分析工作流：开始 → 数据分析 → 直接回复，用于分析数据并生成可视化图表。
+- 文件分析工作流：上传Excel/PDF文件到数据分析节点 → 智能解析 → 生成分析报告和图表。
 
 ### 4. HTTP请求插件使用
 
@@ -199,10 +210,18 @@ Access Token: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
   - 温度设置：控制分析结果的创造性（0-1）
   - 问题模板：自定义分析问题模板
 
+- **文件上传功能**：
+  - 支持多种文件格式：XLSX、CSV、JSON等
+  - 自动文件解析：智能提取文件内容并转换为表格格式
+  - 结构化数据处理：支持CSV、Excel等结构化数据的直接分析
+  - 文本内容分析：支持文档、网页等非结构化内容的智能分析
+  - 元数据提取：自动提取文件类型、结构信息等元数据
+
 - **输出格式**：
   - 分析结论：Markdown格式的分析文本
   - 可视化图表：自动生成柱状图、折线图、饼图
   - 数据表格：结构化的数据展示
+  - 文件信息：显示上传文件的类型、大小、处理状态等
 
 - **环境变量配置**：
   - 本地模型URL可通过 `LOCAL_MODEL_URL` 环境变量配置
@@ -240,7 +259,83 @@ AI-Flow 提供完整的用户认证系统，支持多用户环境下的工作流
 4. **工作流管理**：登录后可以创建、编辑、管理个人工作流
 5. **安全登出**：点击登出按钮安全退出系统
 
-### 7. 聊天与历史
+### 7. 向量数据库增强功能
+
+AI-Flow 的向量数据库系统经过全面升级，提供更强大的知识库管理能力：
+
+#### 支持的文件格式
+
+- **文本文件**: `.txt`, `.md` - 纯文本和Markdown文档
+- **Microsoft Office**: `.docx`, `.doc` - Word文档（新旧版本）
+- **PDF文档**: `.pdf` - 可提取文本内容
+- **Excel表格**: `.xlsx`, `.xls` - 支持多工作表解析
+- **数据文件**: `.csv` - 结构化数据解析
+- **JSON文件**: `.json` - 结构化数据存储
+- **网页文件**: `.html`, `.htm` - HTML内容提取
+- **XML文档**: `.xml` - 结构化标记语言
+
+#### 智能分块策略
+
+- **结构化分块**: 优先按段落和句子分割，保持文档结构完整性
+- **滑动窗口分块**: 智能边界检测，避免截断重要信息
+- **混合分块**: 结合多种策略，自动选择最佳分块方法
+- **可配置参数**: 支持自定义块大小、重叠度、最大块数等
+
+#### 增强搜索功能
+
+- **多种搜索模式**:
+  - 向量搜索：基于语义相似度的智能检索
+  - 关键词搜索：基于文本匹配的精确查找
+  - 混合搜索：结合向量和关键词的优势
+- **智能重排序**: 基于文本长度、关键词匹配等综合评分
+- **查询扩展**: 自动生成相关查询，提高召回率
+- **搜索建议**: 提供查询优化和纠错建议
+
+#### 文件解析与元数据
+
+- **统一解析接口**: 所有文件格式使用相同的解析流程
+- **元数据提取**: 自动提取文件结构信息（如Excel工作表、PDF页数等）
+- **错误处理**: 完善的错误处理和回退机制
+- **文件统计**: 详细的文件信息和处理统计
+
+#### 使用示例
+
+**上传多种格式文件**:
+```javascript
+// 上传PDF文件
+const formData = new FormData();
+formData.append('file', pdfFile);
+formData.append('chunkOptions', JSON.stringify({
+  chunkSize: 1000,
+  overlap: 150,
+  preserveStructure: true
+}));
+
+const response = await fetch('/api/vector/upload', {
+  method: 'POST',
+  body: formData
+});
+```
+
+**混合搜索**:
+```javascript
+const searchResponse = await fetch('/api/vector/search', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({
+    query: '人工智能应用',
+    searchType: 'hybrid',
+    topK: 10,
+    options: {
+      threshold: 0.5,
+      rerank: true,
+      expandQuery: true
+    }
+  })
+});
+```
+
+### 8. 聊天与历史
 
 - 支持连续对话，历史保存在前端状态。
 - 清除记录按钮重置历史。
@@ -269,11 +364,11 @@ AI-Flow 提供完整的用户认证系统，支持多用户环境下的工作流
   - `_1 后缀文件`: 备份版本 (e.g., package_1.json)，可忽略。
 
 - **server/**: Express 后端。
-  - `package.json`: 依赖 (express, cors, multer, node-fetch, dotenv, better-sqlite3)，脚本: `npm run dev` (nodemon)。
+  - `package.json`: 依赖 (express, cors, multer, node-fetch, dotenv, better-sqlite3, mammoth, pdf-parse, xlsx, csv-parser)，脚本: `npm run dev` (nodemon)。
   - `src/index.js`: 主服务器，路由:
     - `/api/auth/*`: 用户认证 (注册/登录/JWT验证)。
     - `/api/workflows/*`: 工作流管理 (创建/读取/更新/删除)。
-    - `/api/vector/*`: 向量数据库管理 (上传/搜索/文件管理/统计)。
+    - `/api/vector/*`: 向量数据库管理 (上传/搜索/文件管理/统计/格式支持)。
     - `/api/chat`: LLM 调用 (Qwen/OpenAI/OpenRouter/本地模型)。
     - `/api/chat-stream`: LLM 流式调用。
     - `/api/analysis`: 数据分析调用。
@@ -283,6 +378,8 @@ AI-Flow 提供完整的用户认证系统，支持多用户环境下的工作流
     - `/api/config`: 获取服务器配置信息。
     - `/api/health`: 健康检查。
   - `src/vectorDB.js`: SQLite3 向量数据库类，支持文档存储、相似性搜索。
+  - `src/fileParser.js`: 文件解析器，支持多种文件格式解析和智能分块。
+  - `src/enhancedVectorSearch.js`: 增强向量搜索，支持多种搜索模式和智能纠错。
   - `vector_knowledge.db`: SQLite3 数据库文件 (自动创建)。
   - `uploads/`: 临时文件目录 (multer)。
 
@@ -300,13 +397,16 @@ AI-Flow 提供完整的用户认证系统，支持多用户环境下的工作流
 - **DELETE /api/workflows/:id**: (需要认证) → { message }
 
 ### 向量数据库 API
-- **POST /api/vector/upload**: multipart (file) 或 { text, filename } → { ok, fileId, filename, inserted, total, results }
-- **POST /api/vector/search**: { query, topK } → { matches: [{id, text, similarity}] }
+- **POST /api/vector/upload**: multipart (file) 或 { text, filename, chunkOptions } → { ok, fileId, filename, fileType, metadata, inserted, total, results }
+- **POST /api/vector/search**: { query, topK, searchType, options } → { matches: [{id, text, similarity, metadata}], suggestions, searchType, totalResults }
 - **GET /api/vector/files**: → { files: [{id, filename, file_size, file_type, chunk_count, created_at}] }
 - **GET /api/vector/files/:filename**: → { documents: [{id, filename, chunk_index, chunk_text, ...}] }
 - **DELETE /api/vector/files/:filename**: → { ok, filename, docsDeleted, fileDeleted }
 - **GET /api/vector/documents**: → { documents: [{id, filename, chunk_index, chunk_text, ...}] }
-- **GET /api/vector/stats**: → { stats: {totalDocuments, totalFiles, totalSize} }
+- **GET /api/vector/stats**: → { stats: {totalDocuments, totalFiles, totalSize}, searchStats, supportedFormats }
+- **GET /api/vector/formats**: → { supportedFormats, formatDetails }
+- **GET /api/vector/search-history**: → { totalSearches, averageResults, topQueries }
+- **POST /api/vector/parse-test**: multipart (file) → { success, filename, fileType, content, metadata, contentLength }
 
 ### 其他 API
 - **POST /api/chat**: { messages, model, temperature, apiKey?, apiUrl?, provider } → OpenAI 格式响应。
@@ -330,15 +430,21 @@ AI-Flow 提供完整的用户认证系统，支持多用户环境下的工作流
 ### 常见问题
 
 - **API Key 无效**: 检查 Qwen 控制台配额，确保兼容模式启用。
-- **嵌入失败**: 文本过长? 自动分块；文件 >500KB 拒绝。
+- **嵌入失败**: 文本过长? 自动分块；文件 >2MB 拒绝。
 - **数据库连接错误**: 确保 SQLite3 数据库文件权限正确，better-sqlite3 依赖已安装。
 - **向量搜索无结果**: 检查是否已上传文档到向量数据库，使用 `/api/vector/stats` 查看统计信息。
+- **文件格式不支持**: 确保上传的文件格式在支持列表中，使用 `/api/vector/formats` 查看支持的格式。
+- **文件解析失败**: 检查文件是否损坏，尝试使用 `/api/vector/parse-test` 测试文件解析。
+- **搜索结果不准确**: 尝试调整搜索参数，使用混合搜索模式，或调整相似度阈值。
 - **跨域错误**: 确保前端代理或 CORS 配置正确 (默认启用)。
 - **节点不执行**: 检查边连接；条件分支需匹配 sourceHandle (if/else)。
 - **端口冲突**: 确保后端运行在 5757 端口，前端代理配置正确。
 - **本地模型连接失败**: 检查 `LOCAL_MODEL_URL` 环境变量配置，确保本地模型服务正在运行。
 - **数据分析无结果**: 检查LLM提供商配置，确保API Key和模型设置正确。
 - **图表不显示**: 确保数据分析结果包含表格数据，检查Markdown表格格式。
+- **文件上传失败**: 检查文件格式是否支持，确保文件大小不超过2MB，检查文件是否损坏。
+- **文件解析错误**: 尝试使用 `/api/vector/parse-test` 测试文件解析，检查文件格式是否正确。
+- **数据分析结果不准确**: 检查上传的文件内容是否完整，尝试调整问题模板以获得更好的分析结果。
 - **HTTP请求失败**: 检查鉴权配置是否正确，确保API Key、Token等凭据有效。
 - **OAuth2认证失败**: 确保Access Token有效且未过期，检查Token格式是否正确。
 - **用户认证失败**: 检查用户名和密码是否正确，确保JWT令牌未过期。

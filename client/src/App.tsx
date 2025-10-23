@@ -3,7 +3,7 @@ import Auth from './Auth'
 import WorkflowDashboard from './WorkflowDashboard'
 import WorkflowEditor from './WorkflowEditor'
 
-// 简化的App组件，主要负责认证和视图切换
+// App组件，主要负责认证和视图切换
 export default function App() {
   // 认证状态
   const [user, setUser] = useState(null)
@@ -85,7 +85,7 @@ export default function App() {
 
   // 根据当前视图显示不同界面
   if (currentView === 'dashboard') {
-    return (
+                          return (
       <WorkflowDashboard
         token={token}
         onEditWorkflow={handleEditWorkflow}
@@ -96,7 +96,7 @@ export default function App() {
   }
 
   if (currentView === 'editor') {
-    return (
+      return (
       <WorkflowEditor
         workflowId={currentWorkflowId || 'new'}
         token={token}

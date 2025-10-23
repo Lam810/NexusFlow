@@ -95,6 +95,9 @@ type AnalysisConfig = {
   provider?: 'qwen' | 'openai' | 'local' | 'openrouter'
   model?: string
   temperature?: number
+  uploadedData?: any[][]
+  uploadedHeaders?: string[]
+  uploadedFilename?: string
 }
 type CondClause = {
   variable: string
@@ -219,6 +222,12 @@ function renderTemplate(template: string, variables: Record<string, any>): strin
 // Markdown 渲染
 function renderMarkdownToHtml(md: string): string {
   return md
+    .replace(/^# (.*$)/gim, '<h1>$1</h1>')
+    .replace(/^## (.*$)/gim, '<h2>$1</h2>')
+    .replace(/^### (.*$)/gim, '<h3>$1</h3>')
+    .replace(/^---$/gim, '<hr>')
+    .replace(/^[\s]*[-*+] (.*$)/gim, '<li>$1</li>')
+    .replace(/^[\s]*\d+\. (.*$)/gim, '<li>$1</li>')
     .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
     .replace(/\*(.*?)\*/g, '<em>$1</em>')
     .replace(/`(.*?)`/g, '<code>$1</code>')
@@ -273,6 +282,7 @@ function loadEcharts(): Promise<any> {
 function ChartWidget({ headers, rows }: { headers: string[]; rows: Array<Record<string, string>> }) {
   const [type, setType] = React.useState('bar' as any)
   const chartRef = React.useRef(null as any)
+  const chartInstanceRef = React.useRef(null as any)
 
   React.useEffect(() => {
     let disposed = false
@@ -280,6 +290,7 @@ function ChartWidget({ headers, rows }: { headers: string[]; rows: Array<Record<
       const echarts = await loadEcharts()
       if (!chartRef.current || disposed) return
       const inst = echarts.init(chartRef.current)
+      chartInstanceRef.current = inst
       const xKey = headers[0]
       const yKey = headers[1]
       const x = rows.map(r => r[xKey])
@@ -316,6 +327,23 @@ function ChartWidget({ headers, rows }: { headers: string[]; rows: Array<Record<
     return () => { disposed = true; Promise.resolve(cleanupPromise).catch(() => {}) }
   }, [type, headers, rows])
 
+  const exportChart = (format: 'png' | 'jpg' | 'svg') => {
+    if (!chartInstanceRef.current) return
+    
+    const url = chartInstanceRef.current.getDataURL({
+      type: format,
+      pixelRatio: 2,
+      backgroundColor: '#fff'
+    })
+    
+    const link = document.createElement('a')
+    link.download = `chart_${new Date().toISOString().slice(0, 10)}.${format}`
+    link.href = url
+    document.body.appendChild(link)
+    link.click()
+    document.body.removeChild(link)
+  }
+
   return (
     <div className="chart-widget">
       <div className="chart-table">
@@ -336,6 +364,51 @@ function ChartWidget({ headers, rows }: { headers: string[]; rows: Array<Record<
           <option value="line">折线图</option>
           <option value="pie">饼图</option>
         </select>
+        
+        <div style={{ marginLeft: '12px', display: 'flex', gap: '4px' }}>
+          <button 
+            onClick={() => exportChart('png')}
+            style={{ 
+              padding: '4px 8px', 
+              fontSize: '12px', 
+              backgroundColor: '#10b981', 
+              color: 'white', 
+              border: 'none', 
+              borderRadius: '4px', 
+              cursor: 'pointer' 
+            }}
+          >
+            PNG
+          </button>
+          <button 
+            onClick={() => exportChart('jpg')}
+            style={{ 
+              padding: '4px 8px', 
+              fontSize: '12px', 
+              backgroundColor: '#3b82f6', 
+              color: 'white', 
+              border: 'none', 
+              borderRadius: '4px', 
+              cursor: 'pointer' 
+            }}
+          >
+            JPG
+          </button>
+          <button 
+            onClick={() => exportChart('svg')}
+            style={{ 
+              padding: '4px 8px', 
+              fontSize: '12px', 
+              backgroundColor: '#8b5cf6', 
+              color: 'white', 
+              border: 'none', 
+              borderRadius: '4px', 
+              cursor: 'pointer' 
+            }}
+          >
+            SVG
+          </button>
+        </div>
       </div>
       <div ref={chartRef} style={{ width: '100%', height: 300, marginTop: 6 }} />
     </div>
@@ -656,20 +729,51 @@ async function runFlow(
       
       try {
         const question = renderTemplate(cfg.questionTemplate || '{{query}}', ctx.variables)
-        let text = ''
-        await sseStream('/api/analysis-stream', { 
-          apiUrl: cfg.apiUrl, 
-          apiKey: cfg.apiKey, 
-          question, 
-          provider: cfg.provider,
-          model: cfg.model,
-          temperature: cfg.temperature
-        }, (chunk) => {
-          text += chunk
-          if (onOutput) onOutput(nodeId, text)
-        })
         
-        ctx.variables[`analysis_text_${nodeId}`] = text
+        // 检查是否有上传的文件数据
+        if (cfg.uploadedData && cfg.uploadedHeaders) {
+          // 使用带文件数据的分析API
+          const response = await fetch('/api/analysis-with-data', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              apiUrl: cfg.apiUrl,
+              apiKey: cfg.apiKey,
+              question,
+              data: cfg.uploadedData,
+              headers: cfg.uploadedHeaders,
+              provider: cfg.provider,
+              model: cfg.model,
+              temperature: cfg.temperature
+            })
+          })
+          
+          if (!response.ok) {
+            throw new Error('数据分析请求失败')
+          }
+          
+          const result = await response.json()
+          const text = result.analysis
+          
+          if (onOutput) onOutput(nodeId, text)
+          ctx.variables[`analysis_text_${nodeId}`] = text
+        } else {
+          // 使用原有的流式分析API
+          let text = ''
+          await sseStream('/api/analysis-stream', { 
+            apiUrl: cfg.apiUrl, 
+            apiKey: cfg.apiKey, 
+            question, 
+            provider: cfg.provider,
+            model: cfg.model,
+            temperature: cfg.temperature
+          }, (chunk) => {
+            text += chunk
+            if (onOutput) onOutput(nodeId, text)
+          })
+          
+          ctx.variables[`analysis_text_${nodeId}`] = text
+        }
       } catch (error) {
         if (onOutput) onOutput(nodeId, `**数据分析失败**\n\n${(error as Error).message}`)
       }
@@ -2096,11 +2200,191 @@ export default function WorkflowEditor({ workflowId, token, user, onBack, onSave
                 disabled={cfg.provider === 'local'} />
             </label>
             
+            {/* 文件上传功能 */}
+            <div style={{ marginBottom: '16px', padding: '12px', border: '1px dashed #d1d5db', borderRadius: '6px' }}>
+              <div style={{ fontSize: '14px', fontWeight: '500', marginBottom: '8px' }}>数据文件上传</div>
+              
+              <input 
+                type="file" 
+                id={`file-upload-${selected.id}`}
+                accept=".csv,.xlsx,.xls"
+                onChange={async (e) => {
+                  const file = e.target.files?.[0];
+                  if (!file) return;
+                  
+                  const formData = new FormData();
+                  formData.append('file', file);
+                  
+                  try {
+                    const response = await fetch('/api/upload-data', {
+                      method: 'POST',
+                      body: formData
+                    });
+                    
+                    if (!response.ok) {
+                      throw new Error('文件上传失败');
+                    }
+                    
+                    const result = await response.json();
+                    
+                    // 保存文件数据到节点配置
+                    setNodes((ns) => ns.map(n => n.id === selected.id ? { 
+                      ...n, 
+                      data: { 
+                        ...n.data, 
+                        config: { 
+                          ...(selected.data?.config || {}), 
+                          uploadedData: result.data,
+                          uploadedHeaders: result.headers,
+                          uploadedFilename: result.filename
+                        } 
+                      } 
+                    } : n));
+                    
+                    alert(`文件上传成功！\n文件名：${result.filename}\n行数：${result.rowCount}\n列数：${result.columnCount}`);
+                  } catch (error) {
+                    alert(`文件上传失败：${error.message}`);
+                  }
+                }}
+                style={{ display: 'none' }}
+              />
+              
+              <label 
+                htmlFor={`file-upload-${selected.id}`}
+                style={{ 
+                  display: 'inline-block',
+                  padding: '8px 16px',
+                  backgroundColor: '#3b82f6',
+                  color: 'white',
+                  borderRadius: '4px',
+                  cursor: 'pointer',
+                  fontSize: '14px'
+                }}
+              >
+                选择文件 (CSV/Excel)
+              </label>
+              
+              {selected.data?.config?.uploadedFilename && (
+                <div style={{ marginTop: '8px', fontSize: '12px', color: '#059669' }}>
+                  ✓ 已上传：{selected.data.config.uploadedFilename}
+                  <button 
+                    onClick={() => {
+                      setNodes((ns) => ns.map(n => n.id === selected.id ? { 
+                        ...n, 
+                        data: { 
+                          ...n.data, 
+                          config: { 
+                            ...(selected.data?.config || {}), 
+                            uploadedData: undefined,
+                            uploadedHeaders: undefined,
+                            uploadedFilename: undefined
+                          } 
+                        } 
+                      } : n));
+                    }}
+                    style={{ 
+                      marginLeft: '8px',
+                      padding: '2px 6px',
+                      backgroundColor: '#ef4444',
+                      color: 'white',
+                      border: 'none',
+                      borderRadius: '3px',
+                      cursor: 'pointer',
+                      fontSize: '10px'
+                    }}
+                  >
+                    清除
+                  </button>
+                </div>
+              )}
+              
+              <div style={{ marginTop: '8px', fontSize: '11px', color: '#6b7280' }}>
+                支持格式：CSV (.csv)、Excel (.xlsx, .xls)
+              </div>
+            </div>
+            
             <label>问题模板：
               <textarea value={cfg.questionTemplate}
                 onChange={(e) => setNodes((ns) => ns.map(n => n.id === selected.id ? { ...n, data: { ...n.data, config: { ...(selected.data?.config || {}), questionTemplate: e.target.value } } } : n))} />
             </label>
             <div style={{marginTop:8, fontSize:12, color:'#64748b'}}>可用变量：{'{{query}}'}、{'{{kb_text}}'}、{'{{http_text}}'}、{'{{llm_text_节点ID}}'}、{'{{analysis_text_节点ID}}'}</div>
+            
+            {/* 图表导出功能 */}
+            {selected.data?.lastOutput && (
+              <div style={{ marginTop: '16px', padding: '12px', border: '1px solid #e5e7eb', borderRadius: '6px' }}>
+                <div style={{ fontSize: '14px', fontWeight: '500', marginBottom: '8px' }}>图表导出</div>
+                <button 
+                  onClick={() => {
+                    // 导出分析结果为Markdown文件
+                    const content = selected.data.lastOutput;
+                    const blob = new Blob([content], { type: 'text/markdown' });
+                    const url = URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.href = url;
+                    a.download = `analysis_${new Date().toISOString().slice(0, 10)}.md`;
+                    document.body.appendChild(a);
+                    a.click();
+                    document.body.removeChild(a);
+                    URL.revokeObjectURL(url);
+                  }}
+                  style={{ 
+                    padding: '6px 12px',
+                    backgroundColor: '#10b981',
+                    color: 'white',
+                    border: 'none',
+                    borderRadius: '4px',
+                    cursor: 'pointer',
+                    fontSize: '12px',
+                    marginRight: '8px'
+                  }}
+                >
+                  导出分析报告 (MD)
+                </button>
+                
+                <button 
+                  onClick={() => {
+                    // 导出为JSON格式（包含数据和配置）
+                    const exportData = {
+                      timestamp: new Date().toISOString(),
+                      filename: selected.data?.config?.uploadedFilename || 'manual_data',
+                      analysis: selected.data.lastOutput,
+                      config: selected.data?.config,
+                      dataSummary: selected.data?.config?.uploadedData ? {
+                        rowCount: selected.data.config.uploadedData.length,
+                        columnCount: selected.data.config.uploadedHeaders?.length || 0,
+                        headers: selected.data.config.uploadedHeaders,
+                        sampleData: selected.data.config.uploadedData.slice(0, 5)
+                      } : null
+                    };
+                    
+                    const blob = new Blob([JSON.stringify(exportData, null, 2)], { type: 'application/json' });
+                    const url = URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.href = url;
+                    a.download = `analysis_${new Date().toISOString().slice(0, 10)}.json`;
+                    document.body.appendChild(a);
+                    a.click();
+                    document.body.removeChild(a);
+                    URL.revokeObjectURL(url);
+                  }}
+                  style={{ 
+                    padding: '6px 12px',
+                    backgroundColor: '#3b82f6',
+                    color: 'white',
+                    border: 'none',
+                    borderRadius: '4px',
+                    cursor: 'pointer',
+                    fontSize: '12px'
+                  }}
+                >
+                  导出完整数据 (JSON)
+                </button>
+                
+                <div style={{ marginTop: '8px', fontSize: '11px', color: '#6b7280' }}>
+                  支持导出分析报告和完整数据
+                </div>
+              </div>
+            )}
           </div>
         )
     }
