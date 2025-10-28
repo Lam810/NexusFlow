@@ -15,10 +15,15 @@ import bcrypt from 'bcryptjs';
 
 const app = express();
 app.use(cors());
-app.use(express.json({ limit: '2mb' }));
+app.use(express.json({ limit: '50mb' }));
 app.use(express.static('public'));
 
-const upload = multer({ dest: 'uploads/' });
+const upload = multer({ 
+  dest: 'uploads/',
+  limits: {
+    fileSize: 50 * 1024 * 1024 // 50MB
+  }
+});
 // 初始化向量数据库和增强搜索
 const vectorDB = new VectorDB();
 const fileParser = new FileParser();
@@ -32,10 +37,119 @@ const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY;
 const LOCAL_MODEL_URL = process.env.LOCAL_MODEL_URL || 'http://192.168.137.37:8000/v1/chat/completions';
 const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key-change-in-production';
 
+// 动态知识库配置
+const KNOWLEDGE_API_URL = process.env.KNOWLEDGE_API_URL || 'http://localhost:5000';
+
+// 聊天记录管理API端点
+app.post('/api/chat/add-context', async (req, res) => {
+  try {
+    const { workflowId, question, answer, timestamp } = req.body;
+    
+    if (!workflowId || !question || !answer) {
+      return res.status(400).json({ error: 'workflowId、question和answer不能为空' });
+    }
+    
+    console.log('📝 收到保存请求 - 问题:', question.substring(0, 50), '回答:', answer.substring(0, 50));
+    
+    // 生成问题的embedding用于后续相似度搜索
+    let questionEmbedding = null;
+    try {
+      questionEmbedding = await createEmbedding(question);
+      console.log('✅ 问题embedding生成成功');
+    } catch (embError) {
+      console.warn('⚠️ 生成问题embedding失败:', embError.message);
+    }
+    
+    const result = vectorDB.saveChatHistory(
+      workflowId, 
+      question, 
+      answer, 
+      questionEmbedding, 
+      timestamp
+    );
+    
+    console.log('💾 聊天记录已保存到VectorDB:', result.id);
+    
+    res.json({ 
+      success: true, 
+      message: '聊天记录保存成功',
+      data: result 
+    });
+  } catch (error) {
+    console.error('添加聊天记录失败:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post('/api/chat/search-context', async (req, res) => {
+  try {
+    const { query, workflowId, topK = 3 } = req.body;
+    
+    if (!query) {
+      return res.status(400).json({ error: 'query不能为空' });
+    }
+    
+    if (!workflowId) {
+      return res.status(400).json({ error: 'workflowId不能为空' });
+    }
+    
+    console.log('🔍 收到搜索请求 - 查询:', query, 'workflowId:', workflowId);
+    
+    // 生成查询的embedding
+    const queryEmbedding = await createEmbedding(query);
+    console.log('✅ 查询embedding生成成功');
+    
+    // 搜索相似的聊天历史
+    const results = vectorDB.searchChatHistory(queryEmbedding, workflowId, topK);
+    
+    console.log(`📊 找到 ${results.length} 条相关历史记录`);
+    if (results.length > 0) {
+      results.forEach((r, i) => {
+        console.log(`  [${i + 1}] 相似度: ${r.similarity.toFixed(4)} - 问题: ${r.question.substring(0, 30)}`);
+      });
+    }
+    
+    res.json({ 
+      success: true,
+      results: results,
+      count: results.length
+    });
+  } catch (error) {
+    console.error('搜索聊天记录失败:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post('/api/chat/clear-context', async (req, res) => {
+  try {
+    const { workflowId } = req.body;
+    
+    if (!workflowId) {
+      return res.status(400).json({ error: 'workflowId不能为空' });
+    }
+    
+    console.log('🗑️ 收到清除请求 - workflowId:', workflowId);
+    
+    const deletedCount = vectorDB.clearChatHistory(workflowId);
+    
+    console.log(`✅ 已清除 ${deletedCount} 条聊天记录`);
+    
+    res.json({ 
+      success: true,
+      message: `已清除${deletedCount}条聊天记录`,
+      deletedCount: deletedCount
+    });
+  } catch (error) {
+    console.error('清除聊天记录失败:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 if (!QWEN_API_KEY) console.warn('QWEN_API_KEY not set. Set it in server/.env');
 if (!OPENAI_API_KEY) console.warn('OPENAI_API_KEY not set. Set it in server/.env');
 if (!OPENROUTER_API_KEY) console.warn('OPENROUTER_API_KEY not set. Set it in server/.env');
 console.log(`Local model URL: ${LOCAL_MODEL_URL}`);
+console.log(`Knowledge API URL: ${KNOWLEDGE_API_URL}`);
 
 // 认证中间件
 const authenticateToken = (req, res, next) => {
@@ -87,8 +201,8 @@ app.post('/api/vector/upload', upload.single('file'), async (req, res) => {
     
     if (req.file) {
       // 限制文件大小
-      if (req.file.size > 2000000) { // 2MB限制
-        return res.status(400).json({ error: 'File too large. Maximum size is 2MB.' });
+      if (req.file.size > 50 * 1024 * 1024) { // 50MB限制
+        return res.status(400).json({ error: 'File too large. Maximum size is 50MB.' });
       }
       
       const filePath = path.resolve(req.file.path);
@@ -416,7 +530,7 @@ app.post('/api/vector/parse-test', upload.single('file'), async (req, res) => {
 
 app.post('/api/chat', async (req, res) => {
   try {
-    const { messages, model = 'qwen-plus', temperature = 0.7, apiKey, apiUrl, provider = 'qwen' } = req.body;
+    const { messages, model = 'qwen-plus', temperature = 0.7, apiKey, apiUrl, provider = 'qwen', useKnowledgeBase = false } = req.body;
 
     // 根据provider确定API配置
     let key, baseUrl, endpoint;
@@ -439,6 +553,65 @@ app.post('/api/chat', async (req, res) => {
       throw new Error('API key is required for remote models');
     }
 
+    // 如果启用知识库，先搜索相关知识
+    let knowledgeContext = '';
+    if (useKnowledgeBase && messages.length > 0) {
+      try {
+        const lastMessage = messages[messages.length - 1];
+        const userQuery = typeof lastMessage === 'string' ? lastMessage : lastMessage.content;
+        
+        // 从知识库搜索相关内容
+        const kbResponse = await fetch(`${KNOWLEDGE_API_URL}/api/knowledge-base/search`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ query: userQuery, top_k: 3 })
+        });
+        
+        if (kbResponse.ok) {
+          const kbData = await kbResponse.json();
+          if (kbData.success && kbData.results && kbData.results.length > 0) {
+            const contextParts = kbData.results.map((r, i) => `[知识${i + 1}] ${r.title}\n${r.content}`).join('\n\n');
+            knowledgeContext = `\n\n以下是来自知识库的相关信息，请基于这些信息回答用户问题：\n\n${contextParts}\n\n`;
+          }
+        }
+      } catch (kbError) {
+        console.warn('知识库搜索失败，继续使用基础对话:', kbError.message);
+      }
+    }
+
+    // 搜索聊天上下文（如果提供了workflowId）
+    let chatContext = '';
+    const workflowId = req.body.workflowId;
+    if (workflowId && messages.length > 0) {
+      try {
+        const lastMessage = messages[messages.length - 1];
+        const userQuery = typeof lastMessage === 'string' ? lastMessage : lastMessage.content;
+        
+        // 从聊天记录搜索相关内容
+        const chatResponse = await fetch(`${KNOWLEDGE_API_URL}/api/knowledge-base/chat/search`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ 
+            query: userQuery, 
+            workflow_id: workflowId,
+            top_k: 3 
+          })
+        });
+        
+        if (chatResponse.ok) {
+          const chatData = await chatResponse.json();
+          if (chatData.success && chatData.results && chatData.results.length > 0) {
+            const contextParts = chatData.results.map((r, i) => 
+              `[历史对话${i + 1}] 问题: ${r.question}\n回答: ${r.answer}`
+            ).join('\n\n');
+            chatContext = `\n\n以下是相关的历史对话记录，请参考这些上下文来回答用户问题：\n\n${contextParts}\n\n`;
+          }
+        }
+      } catch (chatError) {
+        console.warn('聊天上下文搜索失败，继续使用基础对话:', chatError.message);
+      }
+    }
+
     // 构建请求头
     const headers = {
       'Content-Type': 'application/json',
@@ -449,12 +622,38 @@ app.post('/api/chat', async (req, res) => {
       headers['Authorization'] = `Bearer ${key}`;
     }
 
+    // 如果有知识库上下文，添加到最后一个用户消息
+    let finalMessages = messages;
+    if (knowledgeContext && messages.length > 0) {
+      finalMessages = [...messages];
+      const lastMsg = finalMessages[finalMessages.length - 1];
+      const updatedContent = knowledgeContext + (typeof lastMsg === 'string' ? lastMsg : lastMsg.content);
+      
+      if (typeof lastMsg === 'string') {
+        finalMessages[finalMessages.length - 1] = updatedContent;
+      } else {
+        finalMessages[finalMessages.length - 1] = { ...lastMsg, content: updatedContent };
+      }
+    }
+
+    // 如果有聊天上下文，也添加到最后一个用户消息
+    if (chatContext && finalMessages.length > 0) {
+      const lastMsg = finalMessages[finalMessages.length - 1];
+      const updatedContent = chatContext + (typeof lastMsg === 'string' ? lastMsg : lastMsg.content);
+      
+      if (typeof lastMsg === 'string') {
+        finalMessages[finalMessages.length - 1] = updatedContent;
+      } else {
+        finalMessages[finalMessages.length - 1] = { ...lastMsg, content: updatedContent };
+      }
+    }
+
     const r = await fetch(endpoint, {
       method: 'POST',
       headers,
       body: JSON.stringify({ 
         model: provider === 'local' ? (model || 'local-model') : model, 
-        messages, 
+        messages: finalMessages, 
         temperature, 
         stream: false,
         max_tokens: provider === 'local' ? 1000 : undefined // 为本地模型添加max_tokens
@@ -696,6 +895,38 @@ app.post('/api/analysis', async (req, res) => {
       throw new Error('API key is required for remote models');
     }
 
+    // 搜索聊天上下文（如果提供了workflowId）
+    let chatContext = '';
+    if (workflowId && messages.length > 0) {
+      try {
+        const lastMessage = messages[messages.length - 1];
+        const userQuery = typeof lastMessage === 'string' ? lastMessage : lastMessage.content;
+        
+        // 从聊天记录搜索相关内容
+        const chatResponse = await fetch(`${KNOWLEDGE_API_URL}/api/knowledge-base/chat/search`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ 
+            query: userQuery, 
+            workflow_id: workflowId,
+            top_k: 3 
+          })
+        });
+        
+        if (chatResponse.ok) {
+          const chatData = await chatResponse.json();
+          if (chatData.success && chatData.results && chatData.results.length > 0) {
+            const contextParts = chatData.results.map((r, i) => 
+              `[历史对话${i + 1}] 问题: ${r.question}\n回答: ${r.answer}`
+            ).join('\n\n');
+            chatContext = `\n\n以下是相关的历史对话记录，请参考这些上下文来回答用户问题：\n\n${contextParts}\n\n`;
+          }
+        }
+      } catch (chatError) {
+        console.warn('聊天上下文搜索失败，继续使用基础对话:', chatError.message);
+      }
+    }
+
     // 构建请求头
     const headers = {
       'Content-Type': 'application/json',
@@ -791,14 +1022,17 @@ app.post('/api/analysis-stream', async (req, res) => {
 
 // 文件上传API - 支持Excel和CSV文件解析
 app.post('/api/upload-data', upload.single('file'), async (req, res) => {
+  console.log('📁 收到文件上传请求:', req.file);
   try {
     if (!req.file) {
+      console.log('❌ 没有上传文件');
       return res.status(400).json({ error: '没有上传文件' });
     }
 
     const filePath = req.file.path;
     const originalName = req.file.originalname;
     const fileExtension = path.extname(originalName).toLowerCase();
+    console.log('📄 文件信息:', { filePath, originalName, fileExtension });
     
     let data = [];
     let headers = [];
@@ -928,27 +1162,22 @@ ${JSON.stringify(data, null, 2)}
         model: provider === 'local' ? (model || 'local-model') : model,
         messages,
         temperature: temperature || 0.2,
+        stream: true,
       }),
     });
 
-    if (!r.ok) {
+    if (!r.ok || !r.body) {
       const text = await r.text().catch(() => '');
       throw new Error(`API请求失败: ${r.status} ${text}`);
     }
 
-    const result = await r.json();
-    const analysis = result.choices?.[0]?.message?.content || '分析失败';
+    res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
 
-    res.json({ 
-      success: true, 
-      analysis,
-      dataSummary: {
-        rowCount: data.length,
-        columnCount: headers.length,
-        headers,
-        fullData: data
-      }
-    });
+    r.body.on('data', chunk => res.write(chunk));
+    r.body.on('end', () => res.end());
+    r.body.on('error', () => res.end());
 
   } catch (error) {
     console.error('数据分析错误:', error);
@@ -959,7 +1188,7 @@ ${JSON.stringify(data, null, 2)}
 // Chat streaming (SSE passthrough)
 app.post('/api/chat-stream', async (req, res) => {
   try {
-    const { messages, model = 'qwen-plus', temperature = 0.7, apiKey, apiUrl, provider = 'qwen' } = req.body;
+    const { messages, model = 'qwen-plus', temperature = 0.7, apiKey, apiUrl, provider = 'qwen', workflowId } = req.body;
 
     let key, baseUrl, endpoint;
     if (provider === 'local') {
@@ -977,6 +1206,52 @@ app.post('/api/chat-stream', async (req, res) => {
       throw new Error('API key is required for remote models');
     }
 
+    // 搜索聊天上下文（如果提供了workflowId）
+    let chatContext = '';
+    if (workflowId && messages.length > 0) {
+      try {
+        const lastMessage = messages[messages.length - 1];
+        const userQuery = typeof lastMessage === 'string' ? lastMessage : lastMessage.content;
+        
+        // 从聊天记录搜索相关内容
+        const chatResponse = await fetch(`${KNOWLEDGE_API_URL}/api/knowledge-base/chat/search`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ 
+            query: userQuery, 
+            workflow_id: workflowId,
+            top_k: 3 
+          })
+        });
+        
+        if (chatResponse.ok) {
+          const chatData = await chatResponse.json();
+          if (chatData.success && chatData.results && chatData.results.length > 0) {
+            const contextParts = chatData.results.map((r, i) => 
+              `[历史对话${i + 1}] 问题: ${r.question}\n回答: ${r.answer}`
+            ).join('\n\n');
+            chatContext = `\n\n以下是相关的历史对话记录，请参考这些上下文来回答用户问题：\n\n${contextParts}\n\n`;
+          }
+        }
+      } catch (chatError) {
+        console.warn('聊天上下文搜索失败，继续使用基础对话:', chatError.message);
+      }
+    }
+
+    // 如果有聊天上下文，添加到最后一个用户消息
+    let finalMessages = messages;
+    if (chatContext && messages.length > 0) {
+      finalMessages = [...messages];
+      const lastMsg = finalMessages[finalMessages.length - 1];
+      const updatedContent = chatContext + (typeof lastMsg === 'string' ? lastMsg : lastMsg.content);
+      
+      if (typeof lastMsg === 'string') {
+        finalMessages[finalMessages.length - 1] = updatedContent;
+      } else {
+        finalMessages[finalMessages.length - 1] = { ...lastMsg, content: updatedContent };
+      }
+    }
+
     const headers = { 'Content-Type': 'application/json' };
     if (key) headers['Authorization'] = `Bearer ${key}`;
 
@@ -985,7 +1260,7 @@ app.post('/api/chat-stream', async (req, res) => {
       headers,
       body: JSON.stringify({
         model: provider === 'local' ? (model || 'local-model') : model,
-        messages,
+        messages: finalMessages,
         temperature,
         stream: true,
       }),
@@ -1158,10 +1433,311 @@ app.delete('/api/workflows/:id', authenticateToken, async (req, res) => {
 
 app.get('/api/health', (_, res) => res.json({ ok: true }));
 
+// 语义匹配条件分支API
+app.post('/api/semantic-match', async (req, res) => {
+  try {
+    const { 
+      query, 
+      conditions, 
+      provider = 'qwen', 
+      model = 'qwen-plus',
+      temperature = 0.1,
+      apiKey,
+      apiUrl
+    } = req.body;
+    
+    if (!query || !conditions || !Array.isArray(conditions)) {
+      return res.status(400).json({ error: '缺少必要参数：query 和 conditions' });
+    }
+    
+    // 构建语义匹配提示词
+    const conditionsText = conditions.map((cond, index) => 
+      `${index + 1}. ${cond.description || cond.value}`
+    ).join('\n');
+    
+    const prompt = `你是一个智能条件匹配助手。请根据用户查询的语义意图，从以下条件中选择最匹配的一个：
+
+用户查询：${query}
+
+可选条件：
+${conditionsText}
+
+请只返回匹配条件的编号（1、2、3等），如果没有匹配的条件则返回0。不要返回任何其他文字。`;
+
+    // 根据provider确定API配置
+    let key, baseUrl, endpoint;
+    
+    if (provider === 'local') {
+      key = null;
+      baseUrl = apiUrl || LOCAL_MODEL_URL;
+      endpoint = `${baseUrl}`;
+    } else {
+      if (provider === 'openai') key = apiKey || OPENAI_API_KEY; 
+      else if (provider === 'openrouter') key = apiKey || OPENROUTER_API_KEY; 
+      else key = apiKey || QWEN_API_KEY;
+      baseUrl = apiUrl || (provider === 'openai' ? 'https://api.openai.com/v1' : provider === 'openrouter' ? 'https://openrouter.ai/api/v1' : QWEN_BASE_URL);
+      endpoint = `${baseUrl}/chat/completions`;
+    }
+
+    if (!key && provider !== 'local') {
+      throw new Error('API key is required for remote models');
+    }
+
+    const headers = {
+      'Content-Type': 'application/json',
+    };
+    
+    if (key) {
+      headers['Authorization'] = `Bearer ${key}`;
+    }
+
+    const response = await fetch(endpoint, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        model: provider === 'local' ? (model || 'local-model') : model,
+        messages: [{ role: 'user', content: prompt }],
+        temperature: temperature || 0.1,
+        max_tokens: 10, // 限制输出长度
+        stream: false
+      }),
+    });
+
+    if (!response.ok) {
+      const text = await response.text();
+      throw new Error(`语义匹配请求失败: ${response.status} ${text}`);
+    }
+
+    const result = await response.json();
+    const responseText = result.choices?.[0]?.message?.content?.trim() || '0';
+    
+    // 解析返回的编号
+    const matchIndex = parseInt(responseText);
+    const matchedCondition = matchIndex > 0 && matchIndex <= conditions.length 
+      ? conditions[matchIndex - 1] 
+      : null;
+    
+    res.json({
+      success: true,
+      matchedIndex: matchIndex,
+      matchedCondition: matchedCondition,
+      rawResponse: responseText,
+      confidence: matchedCondition ? 'high' : 'low'
+    });
+
+  } catch (error) {
+    console.error('语义匹配错误:', error);
+    res.status(500).json({ error: `语义匹配失败: ${error.message}` });
+  }
+});
+
+// ==================== 动态知识库 API (使用本地 VectorDB) ====================
+
+// 添加知识到动态知识库
+app.post('/api/knowledge/add', async (req, res) => {
+  try {
+    const { title, content, metadata } = req.body;
+    
+    if (!title || !content) {
+      return res.status(400).json({ error: 'title和content不能为空' });
+    }
+    
+    console.log('📝 添加动态数据 - 标题:', title.substring(0, 30));
+    
+    // 生成内容的embedding
+    let embedding = null;
+    try {
+      embedding = await createEmbedding(content);
+      console.log('✅ 内容embedding生成成功');
+    } catch (embError) {
+      console.warn('⚠️ 生成内容embedding失败:', embError.message);
+    }
+    
+    const result = vectorDB.addDynamicData(title, content, embedding, metadata);
+    
+    console.log('💾 动态数据已保存到VectorDB:', result.id);
+    
+    res.json({ 
+      success: true,
+      message: '知识添加成功',
+      data: result 
+    });
+  } catch (error) {
+    console.error('添加知识失败:', error);
+    res.status(500).json({ error: `添加知识失败: ${error.message}` });
+  }
+});
+
+// 批量添加知识到动态知识库
+app.post('/api/knowledge/batch-add', async (req, res) => {
+  try {
+    const { items } = req.body;
+    
+    if (!items || !Array.isArray(items) || items.length === 0) {
+      return res.status(400).json({ error: 'items必须是非空数组' });
+    }
+    
+    console.log(`📝 批量添加动态数据 - 数量: ${items.length}`);
+    
+    const results = [];
+    const errors = [];
+    
+    for (const item of items) {
+      try {
+        if (!item.title || !item.content) {
+          errors.push({ item, error: 'title和content不能为空' });
+          continue;
+        }
+        
+        // 生成embedding
+        let embedding = null;
+        try {
+          embedding = await createEmbedding(item.content);
+        } catch (embError) {
+          console.warn(`⚠️ 生成embedding失败 (${item.title}):`, embError.message);
+        }
+        
+        const result = vectorDB.addDynamicData(
+          item.title,
+          item.content,
+          embedding,
+          item.metadata
+        );
+        results.push(result);
+      } catch (error) {
+        errors.push({ item, error: error.message });
+      }
+    }
+    
+    console.log(`✅ 批量添加完成 - 成功: ${results.length}, 失败: ${errors.length}`);
+    
+    res.json({ 
+      success: true,
+      message: `成功添加${results.length}条，失败${errors.length}条`,
+      added: results.length,
+      failed: errors.length,
+      results: results,
+      errors: errors
+    });
+  } catch (error) {
+    console.error('批量添加知识失败:', error);
+    res.status(500).json({ error: `批量添加知识失败: ${error.message}` });
+  }
+});
+
+// 在知识库中搜索
+app.post('/api/knowledge/search', async (req, res) => {
+  try {
+    const { query, top_k = 3, threshold = 0.3 } = req.body;
+    
+    if (!query) {
+      return res.status(400).json({ error: 'query不能为空' });
+    }
+    
+    console.log('🔍 搜索动态知识 - 查询:', query);
+    
+    // 生成查询embedding
+    const queryEmbedding = await createEmbedding(query);
+    console.log('✅ 查询embedding生成成功');
+    
+    // 搜索动态数据
+    const results = vectorDB.searchDynamicData(queryEmbedding, top_k, threshold);
+    
+    console.log(`📊 找到 ${results.length} 条相关知识`);
+    if (results.length > 0) {
+      results.forEach((r, i) => {
+        console.log(`  [${i + 1}] 相似度: ${r.similarity.toFixed(4)} - 标题: ${r.title.substring(0, 30)}`);
+      });
+    }
+    
+    res.json({ 
+      success: true,
+      results: results,
+      count: results.length
+    });
+  } catch (error) {
+    console.error('搜索知识失败:', error);
+    res.status(500).json({ error: `搜索知识失败: ${error.message}` });
+  }
+});
+
+// 获取知识库统计信息
+app.get('/api/knowledge/stats', async (req, res) => {
+  try {
+    const stats = vectorDB.getDynamicDataStats();
+    
+    res.json({ 
+      success: true,
+      stats: stats
+    });
+  } catch (error) {
+    console.error('获取知识库统计失败:', error);
+    res.status(500).json({ error: `获取知识库统计失败: ${error.message}` });
+  }
+});
+
+// 获取所有动态数据
+app.get('/api/knowledge/list', async (req, res) => {
+  try {
+    const { limit = 100 } = req.query;
+    const data = vectorDB.getAllDynamicData(parseInt(limit));
+    
+    res.json({ 
+      success: true,
+      data: data,
+      count: data.length
+    });
+  } catch (error) {
+    console.error('获取动态数据列表失败:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// 删除动态数据
+app.delete('/api/knowledge/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const success = vectorDB.deleteDynamicData(id);
+    
+    if (success) {
+      res.json({ 
+        success: true,
+        message: '删除成功'
+      });
+    } else {
+      res.status(404).json({ error: '数据不存在' });
+    }
+  } catch (error) {
+    console.error('删除动态数据失败:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// 清空所有动态数据
+app.post('/api/knowledge/clear', async (req, res) => {
+  try {
+    const deletedCount = vectorDB.clearAllDynamicData();
+    
+    console.log(`🗑️ 已清空 ${deletedCount} 条动态数据`);
+    
+    res.json({ 
+      success: true,
+      message: `已清空${deletedCount}条动态数据`,
+      deletedCount: deletedCount
+    });
+  } catch (error) {
+    console.error('清空动态数据失败:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ==================== 动态知识库 API 结束 ====================
+
 // 获取服务器配置信息
 app.get('/api/config', (_, res) => {
   res.json({
     localModelUrl: LOCAL_MODEL_URL,
+    knowledgeApiUrl: KNOWLEDGE_API_URL,
     providers: {
       qwen: {
         name: '通义千问',

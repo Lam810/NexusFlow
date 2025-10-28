@@ -27,7 +27,7 @@
             box-shadow: 0 20px 40px rgba(0, 0, 0, 0.1);
             padding: 40px;
             width: 100%;
-            max-width: 600px;
+            max-width: 800px;
         }
 
         h1 {
@@ -199,23 +199,47 @@
         }
 
         .links {
-            text-align: center;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            gap: 15px;
             margin-top: 30px;
+            flex-wrap: wrap;
         }
 
         .links a {
             color: #667eea;
             text-decoration: none;
-            margin: 0 15px;
             padding: 10px 20px;
             border: 2px solid #667eea;
             border-radius: 25px;
             transition: all 0.3s ease;
+            white-space: nowrap;
+            flex-shrink: 0;
         }
 
         .links a:hover {
             background-color: #667eea;
             color: white;
+        }
+
+        /* 响应式设计 */
+        @media (max-width: 768px) {
+            .container {
+                padding: 20px;
+                margin: 10px;
+            }
+            
+            .links {
+                flex-direction: column;
+                gap: 10px;
+            }
+            
+            .links a {
+                width: 100%;
+                text-align: center;
+                max-width: 200px;
+            }
         }
     </style>
 </head>
@@ -226,7 +250,7 @@
         <div class="upload-area" id="uploadArea">
             <div class="upload-icon">📁</div>
             <div class="upload-text">点击或拖拽文件到此处</div>
-            <div class="upload-hint">支持多种格式：TXT, MD, DOCX, PDF, XLSX, CSV, JSON, XML, HTML 等，最大 2MB</div>
+            <div class="upload-hint">支持多种格式：TXT, MD, DOCX, PDF, XLSX, CSV, JSON, XML, HTML 等，最大 50MB</div>
             <input type="file" id="fileInput" accept=".txt,.md,.docx,.doc,.pdf,.xlsx,.xls,.csv,.json,.xml,.html,.htm">
         </div>
 
@@ -328,8 +352,8 @@
                 return;
             }
 
-            if (file.size > 2000000) { // 2MB限制
-                showResult('文件太大，最大支持 2MB', 'error');
+            if (file.size > 50 * 1024 * 1024) { // 50MB限制
+                showResult('文件太大，最大支持 50MB', 'error');
                 return;
             }
 
@@ -478,7 +502,7 @@
             Object.entries(formats).forEach(([ext, desc]) => {
                 message += `${ext} - ${desc}\n`;
             });
-            message += '\n最大文件大小：2MB';
+            message += '\n最大文件大小：50MB';
             
             showResult(message, 'success');
         }

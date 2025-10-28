@@ -1,7 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import mammoth from 'mammoth';
-import * as pdfParse from 'pdf-parse';
+import { PDFParse } from 'pdf-parse';
 import XLSX from 'xlsx';
 import csv from 'csv-parser';
 
@@ -68,7 +68,7 @@ class FileParser {
   async parseText(filePath, options = {}) {
     const content = fs.readFileSync(filePath, 'utf-8');
     return {
-      content: content,
+      content: String(content || ''), // 确保content是字符串
       metadata: {
         encoding: 'utf-8',
         size: content.length
@@ -82,7 +82,7 @@ class FileParser {
     const result = await mammoth.extractRawText({ buffer });
     
     return {
-      content: result.value,
+      content: String(result.value || ''), // 确保content是字符串
       metadata: {
         warnings: result.messages,
         size: buffer.length
@@ -93,13 +93,16 @@ class FileParser {
   // 解析PDF文件
   async parsePdf(filePath, options = {}) {
     const buffer = fs.readFileSync(filePath);
-    const data = await pdfParse(buffer);
+    const uint8Array = new Uint8Array(buffer);
+    const pdfParse = new PDFParse(uint8Array);
+    await pdfParse.load();
+    const text = pdfParse.getText();
     
     return {
-      content: data.text,
+      content: String(text || ''), // 确保content是字符串
       metadata: {
-        pages: data.numpages,
-        info: data.info,
+        pages: pdfParse.doc ? pdfParse.doc.numPages : 0,
+        info: pdfParse.getInfo ? pdfParse.getInfo() : {},
         size: buffer.length
       }
     };

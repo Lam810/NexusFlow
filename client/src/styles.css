@@ -47,7 +47,11 @@ pre { white-space: pre-wrap; word-break: break-word; background: #ffffff; border
 
 /* Node cards */
 .react-flow__node { border: none; background: transparent; }
-.node-card { display: flex; align-items: center; gap: 10px; min-width: 200px; padding: 14px 16px; border-radius: 14px; border:1px solid #e5e7eb; background: linear-gradient(180deg,#ffffff,#f6f7ff); box-shadow: 0 8px 20px rgba(64,64,159,0.08); }
+.node-card { display: flex; align-items: flex-start; gap: 10px; min-width: 200px; padding: 14px 16px; border-radius: 14px; border:1px solid #e5e7eb; background: linear-gradient(180deg,#ffffff,#f6f7ff); box-shadow: 0 8px 20px rgba(64,64,159,0.08); }
+
+/* 条件分支节点特殊样式 */
+.node-card.condition-branch { align-items: flex-start; }
+.node-card.condition-branch .node-content { margin-top: 2px; }
 
 /* Multiple handles styling */
 .react-flow__handle {

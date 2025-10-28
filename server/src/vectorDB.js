@@ -68,11 +68,41 @@ class VectorDB {
       )
     `);
 
+    // 创建聊天历史表
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS chat_history (
+        id TEXT PRIMARY KEY,
+        workflow_id TEXT NOT NULL,
+        question TEXT NOT NULL,
+        answer TEXT NOT NULL,
+        embedding BLOB,
+        timestamp INTEGER NOT NULL,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+
+    // 创建动态数据表
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS dynamics_data (
+        id TEXT PRIMARY KEY,
+        title TEXT NOT NULL,
+        content TEXT NOT NULL,
+        embedding BLOB,
+        metadata TEXT,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+
     // 创建索引
     this.db.exec(`
       CREATE INDEX IF NOT EXISTS idx_documents_file ON documents(filename);
       CREATE INDEX IF NOT EXISTS idx_documents_created ON documents(created_at);
       CREATE INDEX IF NOT EXISTS idx_files_created ON files(created_at);
+      CREATE INDEX IF NOT EXISTS idx_chat_history_workflow ON chat_history(workflow_id);
+      CREATE INDEX IF NOT EXISTS idx_chat_history_timestamp ON chat_history(timestamp);
+      CREATE INDEX IF NOT EXISTS idx_dynamics_data_created ON dynamics_data(created_at);
+      CREATE INDEX IF NOT EXISTS idx_dynamics_data_title ON dynamics_data(title);
     `);
   }
 
@@ -305,6 +335,260 @@ class VectorDB {
     const stmt = this.db.prepare('DELETE FROM workflows WHERE id = ? AND user_id = ?');
     const result = stmt.run(workflowId, userId);
     return result.changes > 0;
+  }
+
+  // ==================== 动态数据管理方法 ====================
+  
+  // 添加动态数据
+  addDynamicData(title, content, embedding, metadata = null) {
+    const id = `dynamic_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+    const stmt = this.db.prepare(`
+      INSERT INTO dynamics_data (id, title, content, embedding, metadata)
+      VALUES (?, ?, ?, ?, ?)
+    `);
+    
+    stmt.run(
+      id,
+      title,
+      content,
+      embedding ? JSON.stringify(embedding) : null,
+      metadata ? JSON.stringify(metadata) : null
+    );
+    
+    return { id, title, content, metadata };
+  }
+
+  // 批量添加动态数据
+  batchAddDynamicData(items, embeddingFunc) {
+    const results = [];
+    const errors = [];
+    
+    for (const item of items) {
+      try {
+        let embedding = null;
+        if (embeddingFunc) {
+          // 这里假设embeddingFunc已经准备好
+          // 实际调用在API层完成
+          embedding = item.embedding || null;
+        }
+        
+        const result = this.addDynamicData(
+          item.title,
+          item.content,
+          embedding,
+          item.metadata
+        );
+        results.push(result);
+      } catch (error) {
+        errors.push({ item, error: error.message });
+      }
+    }
+    
+    return { success: results.length, failed: errors.length, results, errors };
+  }
+
+  // 搜索动态数据（基于embedding相似度）
+  searchDynamicData(queryEmbedding, topK = 5, threshold = 0.3) {
+    const stmt = this.db.prepare(`
+      SELECT id, title, content, embedding, metadata, created_at
+      FROM dynamics_data
+      WHERE embedding IS NOT NULL
+      ORDER BY created_at DESC
+    `);
+    
+    const results = stmt.all();
+    
+    if (results.length === 0) {
+      return [];
+    }
+    
+    // 计算相似度
+    const similarities = results.map(item => {
+      const embedding = JSON.parse(item.embedding);
+      const similarity = this.cosineSimilarity(queryEmbedding, embedding);
+      return {
+        id: item.id,
+        title: item.title,
+        content: item.content,
+        metadata: item.metadata ? JSON.parse(item.metadata) : null,
+        similarity: similarity,
+        created_at: item.created_at
+      };
+    });
+    
+    // 过滤并排序
+    return similarities
+      .filter(item => item.similarity >= threshold)
+      .sort((a, b) => b.similarity - a.similarity)
+      .slice(0, topK);
+  }
+
+  // 获取所有动态数据
+  getAllDynamicData(limit = 100) {
+    const stmt = this.db.prepare(`
+      SELECT id, title, content, metadata, created_at, updated_at
+      FROM dynamics_data
+      ORDER BY created_at DESC
+      LIMIT ?
+    `);
+    
+    const results = stmt.all(limit);
+    return results.map(r => ({
+      ...r,
+      metadata: r.metadata ? JSON.parse(r.metadata) : null
+    }));
+  }
+
+  // 根据ID获取动态数据
+  getDynamicDataById(id) {
+    const stmt = this.db.prepare(`
+      SELECT id, title, content, embedding, metadata, created_at, updated_at
+      FROM dynamics_data
+      WHERE id = ?
+    `);
+    
+    const result = stmt.get(id);
+    if (result) {
+      return {
+        ...result,
+        embedding: result.embedding ? JSON.parse(result.embedding) : null,
+        metadata: result.metadata ? JSON.parse(result.metadata) : null
+      };
+    }
+    return null;
+  }
+
+  // 更新动态数据
+  updateDynamicData(id, title, content, embedding, metadata) {
+    const stmt = this.db.prepare(`
+      UPDATE dynamics_data
+      SET title = ?, content = ?, embedding = ?, metadata = ?, updated_at = CURRENT_TIMESTAMP
+      WHERE id = ?
+    `);
+    
+    const result = stmt.run(
+      title,
+      content,
+      embedding ? JSON.stringify(embedding) : null,
+      metadata ? JSON.stringify(metadata) : null,
+      id
+    );
+    
+    return result.changes > 0;
+  }
+
+  // 删除动态数据
+  deleteDynamicData(id) {
+    const stmt = this.db.prepare('DELETE FROM dynamics_data WHERE id = ?');
+    const result = stmt.run(id);
+    return result.changes > 0;
+  }
+
+  // 清空所有动态数据
+  clearAllDynamicData() {
+    const stmt = this.db.prepare('DELETE FROM dynamics_data');
+    const result = stmt.run();
+    return result.changes;
+  }
+
+  // 获取动态数据统计
+  getDynamicDataStats() {
+    const countStmt = this.db.prepare('SELECT COUNT(*) as count FROM dynamics_data');
+    const withEmbedding = this.db.prepare('SELECT COUNT(*) as count FROM dynamics_data WHERE embedding IS NOT NULL');
+    
+    return {
+      total: countStmt.get().count,
+      withEmbedding: withEmbedding.get().count
+    };
+  }
+
+  // ==================== 聊天历史管理方法 ====================
+  
+  // 保存聊天历史记录
+  saveChatHistory(workflowId, question, answer, questionEmbedding, timestamp) {
+    const id = `chat_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+    const stmt = this.db.prepare(`
+      INSERT INTO chat_history (id, workflow_id, question, answer, embedding, timestamp)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `);
+    
+    stmt.run(
+      id,
+      workflowId,
+      question,
+      answer,
+      questionEmbedding ? JSON.stringify(questionEmbedding) : null,
+      timestamp || Date.now()
+    );
+    
+    return { id, workflowId, question, answer, timestamp };
+  }
+
+  // 搜索相似的聊天历史
+  searchChatHistory(queryEmbedding, workflowId, topK = 3) {
+    const stmt = this.db.prepare(`
+      SELECT id, question, answer, embedding, timestamp
+      FROM chat_history
+      WHERE workflow_id = ? AND embedding IS NOT NULL
+      ORDER BY timestamp DESC
+    `);
+    
+    const results = stmt.all(workflowId);
+    
+    if (results.length === 0) {
+      return [];
+    }
+    
+    // 计算与查询的相似度
+    const similarities = results.map(chat => {
+      const embedding = JSON.parse(chat.embedding);
+      const similarity = this.cosineSimilarity(queryEmbedding, embedding);
+      return {
+        question: chat.question,
+        answer: chat.answer,
+        timestamp: chat.timestamp,
+        similarity: similarity
+      };
+    });
+    
+    // 按相似度排序并返回topK个结果
+    return similarities
+      .sort((a, b) => b.similarity - a.similarity)
+      .slice(0, topK);
+  }
+
+  // 获取工作流的所有聊天历史
+  getChatHistory(workflowId, limit = 50) {
+    const stmt = this.db.prepare(`
+      SELECT question, answer, timestamp
+      FROM chat_history
+      WHERE workflow_id = ?
+      ORDER BY timestamp DESC
+      LIMIT ?
+    `);
+    
+    return stmt.all(workflowId, limit);
+  }
+
+  // 清除工作流的聊天历史
+  clearChatHistory(workflowId) {
+    const stmt = this.db.prepare('DELETE FROM chat_history WHERE workflow_id = ?');
+    const result = stmt.run(workflowId);
+    return result.changes;
+  }
+
+  // 获取聊天历史统计
+  getChatHistoryStats(workflowId) {
+    const stmt = this.db.prepare(`
+      SELECT COUNT(*) as count
+      FROM chat_history
+      WHERE workflow_id = ?
+    `);
+    
+    const result = stmt.get(workflowId);
+    return {
+      totalMessages: result.count
+    };
   }
 
   // 关闭数据库连接

@@ -4,6 +4,22 @@ AI-Flow 是一个最小化工作流工具，使用 React Flow 实现可视化节
 
 ## 更新日志
 
+- 2025-10-29：
+  - **优化数据分析功能**：增强数据分析插件，支持更智能的数据解析和可视化。
+  - **改进知识库管理**：优化向量数据库性能，提升搜索准确性和响应速度。
+  - **增强工作流管理器**：改进工作流管理界面，提供更好的用户体验。
+  - **完善HTTP认证**：扩展HTTP请求插件的认证方式，支持更多API集成场景。
+  - **UI功能增强**：优化前端界面，改进用户交互体验。
+  - **流式输出优化**：完善LLM和数据分析的流式输出功能。
+
+- 2025-10-26：
+  - **新增动态知识库功能**：集成独立的 Python RAG 系统，支持近乎实时的数据更新。
+  - 支持动态添加结构化或非结构化数据到知识库。
+  - 智能语义检索，无需硬编码 API。
+  - 提供知识库管理 API（添加、搜索、统计）。
+  - 聊天系统集成动态知识库支持。
+  - 参考类似"百度百科"的持续更新模式。
+
 - 2025-10-22：
   - 扩展知识库文件格式支持：新增对Word、PDF、Excel、CSV、JSON、XML、HTML等12种文件格式的支持。
   - 优化向量处理策略：实现结构化分块、滑动窗口分块、混合分块等多种智能分块算法。
@@ -34,13 +50,14 @@ AI-Flow 是一个最小化工作流工具，使用 React Flow 实现可视化节
 
 - **用户认证系统**: 完整的用户注册、登录、JWT令牌认证，支持工作流权限管理和用户隔离。
 - **可视化工作流**: 使用 React Flow 拖拽节点、连接边，构建自定义 AI 流程。
-- **知识库管理**: 使用 SQLite3 持久化存储文本嵌入（使用 Qwen text-embedding-v3），支持多种文件格式上传（TXT、MD、DOCX、PDF、XLSX、CSV、JSON、XML、HTML等）、智能分块、余弦相似度检索、文件管理。
+- **静态知识库管理**: 使用 SQLite3 持久化存储文本嵌入（使用 Qwen text-embedding-v3），支持多种文件格式上传（TXT、MD、DOCX、PDF、XLSX、CSV、JSON、XML、HTML等）、智能分块、余弦相似度检索、文件管理。
+- **动态知识库系统**: 基于 Python RAG + ChromaDB 的实时知识更新系统，支持动态添加结构化/非结构化数据，智能语义检索，无需硬编码 API。
 - **LLM 集成**: 支持多种LLM提供商（Qwen、OpenAI、OpenRouter、本地模型），支持流式输出和模板化提示词。
-- **数据分析**: 智能数据分析插件，支持多种LLM提供商，提供分析建议和可视化图表（柱状图、折线图、饼图）。
-- **条件分支**: 基于变量的 if/elif/else 逻辑，支持多种运算符（包含、等于、空值等）。
+- **数据分析**: 智能数据分析插件，支持多种LLM提供商，提供分析建议和可视化图表（柱状图、折线图、饼图），支持多种文件格式上传和智能解析。
+- **条件分支**: 基于变量的 if/elif/else 逻辑，支持多种运算符（包含、等于、空值等）。新增语义匹配功能，使用AI模型进行智能条件判断。
 - **HTTP 请求**: 强大的HTTP请求插件，支持多种鉴权方式（Bearer Token、API Key、Basic Auth、OAuth2.0、自定义鉴权）、变量替换、JSON/文本 body、高级配置（超时、重试、SSL验证等）。
 - **直接回复**: 使用 LLM 输出或模板渲染最终答案。
-- **聊天界面**: 运行工作流后显示历史对话，支持导入示例知识。
+- **聊天界面**: 运行工作流后显示历史对话，支持导入示例知识，集成动态知识库能力。
 - **持久化存储**: SQLite3 数据库存储向量嵌入，支持文件管理、统计查询，智能文本分块（可配置块大小、重叠度、最大块数），文件大小限 2MB。
 
 ## 快速开始
@@ -48,7 +65,9 @@ AI-Flow 是一个最小化工作流工具，使用 React Flow 实现可视化节
 ### 先决条件
 
 - Node.js >= 20.19.0 或 >= 22.12.0（Vite 7.1.7 要求；当前环境 Node.js v18.18.2 不满足，建议升级 Node.js 以避免兼容性问题。检查：`node --version`）
+  - 注意：虽然当前环境使用 Node.js v18.18.2，但 Vite 7.1.7 官方要求 Node.js >= 20.19.0，建议升级以避免潜在问题。
 - npm >= 9.8.1（随 Node.js 升级自动更新；当前 npm v9.8.1 已满足，但需匹配 Node.js。检查：`npm --version`）
+- Python 3.8+（用于动态知识库系统）
 - Qwen API Key（从 [阿里云百炼控制台](https://bailian.console.aliyun.com/) 获取）
 
 📌 **附加建议**
@@ -70,6 +89,9 @@ cd server && npm install && cd ..
 
 # 安装前端依赖
 cd client && npm install && cd ..
+
+# 安装动态知识库 Python 依赖（可选，如需使用动态知识库功能）
+cd dynamics_rag && pip install -r requirements.txt && cd ..
 ```
 
 ### 配置环境变量
@@ -98,6 +120,17 @@ cd client && npm install && cd ..
 - `OPENROUTER_API_KEY`: OpenRouter API密钥，可选
 - `LOCAL_MODEL_URL`: 本地模型服务地址，支持自定义URL配置
 - `PORT`: 服务器端口，默认5757
+- `KNOWLEDGE_API_URL`: 动态知识库API地址，默认 http://localhost:5000
+- Python环境变量 `OPENAI_API_KEY`: 用于动态知识库，需设置到Python环境
+
+**动态知识库环境配置**（Python环境）：
+```bash
+# Windows
+set OPENAI_API_KEY=sk-your-key-here
+
+# Linux/Mac
+export OPENAI_API_KEY=sk-your-key-here
+```
 
 ### 启动服务
 
@@ -109,8 +142,22 @@ cd server && npm run dev
 cd client && npm run dev
 ```
 
+可选 - 启用动态知识库功能：
+
+```bash
+# 终端 3: 启动动态知识库 Python API 服务器 (端口 5000)
+cd dynamics_rag && python api_server.py
+
+# 或在 Linux/Mac 下
+cd dynamics_rag && bash start_api_server.sh
+
+# 在 Windows 下
+cd dynamics_rag && start_api_server.bat
+```
+
 - 前端: http://localhost:5173
 - 后端: http://localhost:5757 (健康检查: GET /api/health)
+- 动态知识库 API: http://localhost:5000 (需单独启动)
 
 ## 使用指南
 
@@ -132,7 +179,7 @@ cd client && npm run dev
 
 - **节点类型**:
   - **开始**: 入口节点，注入 { query } 变量。
-  - **条件分支**: 配置 if/elif/else 条件（变量如 query.kb_text，支持 contains/is_empty 等）。输出分支变量 condition.branch。
+  - **条件分支**: 配置 if/elif/else 条件（变量如 query.kb_text，支持 contains/is_empty 等）。支持语义匹配模式，使用AI模型进行智能条件判断。输出分支变量 condition.branch。
   - **知识检索**: 配置 topK (默认 3)，支持多种搜索模式（向量搜索、关键词搜索、混合搜索），检索相关片段到 kb_text 变量。
   - **LLM**: 支持多种提供商（Qwen、OpenAI、OpenRouter、本地模型），配置模型、温度、API Key、API URL、system/user prompt (模板: {{query}}, {{kb_text}}, {{http_text}}, {{llm_text_节点ID}})。输出 llm_text_节点ID。
   - **数据分析**: 智能数据分析插件，支持多种LLM提供商，提供分析建议和可视化图表（柱状图、折线图、饼图），支持流式输出，支持多种文件格式上传和智能解析。
@@ -227,7 +274,60 @@ Access Token: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
   - 本地模型URL可通过 `LOCAL_MODEL_URL` 环境变量配置
   - 支持自定义API Key和API URL
 
-### 6. 用户认证系统
+### 6. 语义匹配条件分支
+
+AI-Flow 的条件分支节点支持两种匹配模式：传统关键词匹配和智能语义匹配。
+
+#### 传统关键词匹配
+- **支持的操作符**：
+  - `contains`: 包含指定文本
+  - `not_contains`: 不包含指定文本
+  - `start_with`: 以指定文本开始
+  - `end_with`: 以指定文本结束
+  - `is`: 完全等于指定文本
+  - `is_not`: 不等于指定文本
+  - `is_empty`: 变量为空
+  - `is_not_empty`: 变量不为空
+
+#### 语义匹配模式
+语义匹配使用AI模型进行智能条件判断，能够理解用户查询的语义意图：
+
+- **支持的AI模型**：
+  - 通义千问（qwen-plus等）
+  - OpenAI（gpt-4o等）
+  - OpenRouter（多种开源模型）
+  - 本地模型（自定义API）
+
+- **配置选项**：
+  - 模型提供商选择
+  - 模型名称配置
+  - 温度参数设置（0-2）
+  - API Key和API URL配置
+  - 语义条件定义
+
+- **语义条件配置**：
+  - 条件描述：用自然语言描述条件意图（如"查询割接列表"）
+  - 条件值：对应的标识符（如"list"）
+  - 支持多个语义条件
+
+- **智能回退机制**：
+  - 语义匹配失败时自动回退到传统关键词匹配
+  - 确保工作流的稳定性和可靠性
+
+#### 使用场景示例
+- **割接管理**：
+  - 语义条件1：描述"查询割接列表"，值"list"
+  - 语义条件2：描述"查询割接详情"，值"detail"
+  - 用户输入"我想看看最近的割接安排"会匹配到条件1
+  - 用户输入"这个割接的具体信息是什么"会匹配到条件2
+
+- **技术支持**：
+  - 语义条件1：描述"网络问题咨询"，值"network"
+  - 语义条件2：描述"系统故障报告"，值"system"
+  - 用户输入"网络连接不稳定"会匹配到条件1
+  - 用户输入"服务器宕机了"会匹配到条件2
+
+### 7. 用户认证系统
 
 AI-Flow 提供完整的用户认证系统，支持多用户环境下的工作流管理：
 
@@ -350,21 +450,22 @@ const searchResponse = await fetch('/api/vector/search', {
   - `README.md`: 本文档。
 
 - **client/**: React 前端 (Vite + TypeScript + React Flow)。
-  - `package.json`: 依赖 (reactflow, @types 等)，脚本: `npm run dev`。
+  - `package.json`: 依赖 (reactflow, echarts 等)，脚本: `npm run dev`。
   - `src/App.tsx`: 主组件，认证状态管理、视图切换、工作流管理。
   - `src/Auth.tsx`: 用户认证组件，登录/注册界面。
   - `src/WorkflowDashboard.tsx`: 工作流仪表板，工作流列表和管理。
-  - `src/WorkflowEditor.tsx`: 工作流编辑器，节点配置和执行。
+  - `src/WorkflowEditor.tsx`: 工作流编辑器，节点配置和执行，支持数据分析可视化。
   - `src/WorkflowManager.tsx`: 工作流管理组件。
   - `src/WorkflowCard.tsx`: 工作流卡片组件。
   - `src/main.tsx`: 入口，渲染 App。
   - `src/styles.css`: 样式 (节点卡片、面板、认证界面等)。
   - `index.html`: HTML 模板。
   - `vite.config.ts`: Vite 配置 (端口 5173)。
+  - `dist/`: 构建输出目录。
   - `_1 后缀文件`: 备份版本 (e.g., package_1.json)，可忽略。
 
 - **server/**: Express 后端。
-  - `package.json`: 依赖 (express, cors, multer, node-fetch, dotenv, better-sqlite3, mammoth, pdf-parse, xlsx, csv-parser)，脚本: `npm run dev` (nodemon)。
+  - `package.json`: 依赖 (express, cors, multer, node-fetch, dotenv, better-sqlite3, mammoth, pdf-parse, xlsx, csv-parser, bcryptjs, jsonwebtoken)，脚本: `npm run dev` (nodemon)。
   - `src/index.js`: 主服务器，路由:
     - `/api/auth/*`: 用户认证 (注册/登录/JWT验证)。
     - `/api/workflows/*`: 工作流管理 (创建/读取/更新/删除)。
@@ -375,6 +476,8 @@ const searchResponse = await fetch('/api/vector/search', {
     - `/api/analysis-stream`: 数据分析流式调用。
     - `/api/http-request`: 代理 HTTP (变量替换，支持多种鉴权方式)。
     - `/api/oauth2/token`: OAuth2.0 令牌获取。
+    - `/api/semantic-match`: 语义匹配条件判断。
+    - `/api/chat/add-context`: 聊天记录管理。
     - `/api/config`: 获取服务器配置信息。
     - `/api/health`: 健康检查。
   - `src/vectorDB.js`: SQLite3 向量数据库类，支持文档存储、相似性搜索。
@@ -382,6 +485,8 @@ const searchResponse = await fetch('/api/vector/search', {
   - `src/enhancedVectorSearch.js`: 增强向量搜索，支持多种搜索模式和智能纠错。
   - `vector_knowledge.db`: SQLite3 数据库文件 (自动创建)。
   - `uploads/`: 临时文件目录 (multer)。
+  - `public/`: 静态文件目录，包含上传界面等。
+  - `test.csv`: 测试数据文件。
 
 ## API 参考
 
@@ -407,6 +512,16 @@ const searchResponse = await fetch('/api/vector/search', {
 - **GET /api/vector/formats**: → { supportedFormats, formatDetails }
 - **GET /api/vector/search-history**: → { totalSearches, averageResults, topQueries }
 - **POST /api/vector/parse-test**: multipart (file) → { success, filename, fileType, content, metadata, contentLength }
+
+### 语义匹配 API
+- **POST /api/semantic-match**: 语义匹配条件判断
+  - **请求体**: { query, conditions, provider, model, temperature, apiKey?, apiUrl? }
+  - **响应**: { success, matchedIndex, matchedCondition, rawResponse, confidence }
+
+### 聊天记录管理 API
+- **POST /api/chat/add-context**: 添加聊天上下文
+  - **请求体**: { workflowId, question, answer, timestamp }
+  - **响应**: { success, message }
 
 ### 其他 API
 - **POST /api/chat**: { messages, model, temperature, apiKey?, apiUrl?, provider } → OpenAI 格式响应。
@@ -455,7 +570,7 @@ const searchResponse = await fetch('/api/vector/search', {
 
 - **Qwen API**: [阿里云百炼文档](https://bailian.console.aliyun.com/#/api) (OpenAI 兼容 + 嵌入)。
 - **React Flow**: [文档](https://reactflow.dev/) 用于高级节点/边自定义。
-- **依赖**: 前端 ~200MB node_modules；后端轻量，SQLite3 数据库文件自动创建。
+- **依赖**: 前端包含 React 18.3.1、React Flow 11.10.1、ECharts 6.0.0 等；后端包含 Express 4.19.2、SQLite3、文件解析库等，SQLite3 数据库文件自动创建。
 - **SQLite3**: 使用 better-sqlite3 提供高性能本地数据库存储。
 - 欢迎 PR！焦点：更多节点类型 (e.g., 数据库集成)、流式响应、向量索引优化。
 

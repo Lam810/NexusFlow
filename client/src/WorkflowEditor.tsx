@@ -28,7 +28,7 @@ type RunContext = {
   llmText?: string
 }
 
-type KbConfig = { topK: number }
+type KbConfig = { topK: number; source?: 'static' | 'dynamic' }
 type LlmConfig = {
   model: string
   temperature: number
@@ -99,6 +99,18 @@ type AnalysisConfig = {
   uploadedHeaders?: string[]
   uploadedFilename?: string
 }
+type StartConfig = {
+  mode: 'chat' | 'background'  // 聊天模式或后台模式
+}
+type LoopConfig = {
+  enabled: boolean
+  interval: number  // 间隔时间（秒）
+  maxIterations?: number  // 最大迭代次数，0表示无限
+}
+type QueryTriggerConfig = {
+  enabled: boolean  // 是否启用
+  placeholder?: string  // 占位符文本
+}
 type CondClause = {
   variable: string
   operator: 'contains' | 'not_contains' | 'start_with' | 'end_with' | 'is' | 'is_not' | 'is_empty' | 'is_not_empty'
@@ -108,6 +120,19 @@ type CondConfig = {
   if: CondClause
   elifs: CondClause[]
   elseEnabled: boolean
+  // 语义匹配配置
+  semanticMatch?: {
+    enabled: boolean
+    provider: string
+    model: string
+    temperature: number
+    apiKey: string
+    apiUrl: string
+    conditions: Array<{
+      description: string
+      value: string
+    }>
+  }
 }
 
 // 节点组件
@@ -116,8 +141,31 @@ function CardNode({ data, id }: any) {
   const showRight = data?.handles?.includes('right')
   const showMultiple = data?.handles?.includes('multiple')
   
+  // 动态条件出口（用于条件分支节点）
+  const conditionHandles = data?.conditionHandles || []
+  
+  // 动态计算节点高度
+  const getNodeHeight = () => {
+    if (conditionHandles.length === 0) return 'auto'
+    // 基础高度 + 每个出口的高度 + 间距
+    const baseHeight = 60 // 基础高度
+    const handleHeight = 24 // 每个出口占用的高度
+    const spacing = 8 // 出口间距
+    const totalHeight = baseHeight + (conditionHandles.length * handleHeight) + ((conditionHandles.length - 1) * spacing)
+    const finalHeight = Math.max(totalHeight, 80) // 最小高度80px
+    console.log(`条件分支节点 ${id}: ${conditionHandles.length}个出口, 计算高度: ${finalHeight}px`)
+    return `${finalHeight}px`
+  }
+  
   return (
-    <div className={`node-card ${data?.theme || ''} ${data?.runtimeStatus ? `status-${data.runtimeStatus}` : ''}`} id={`node-${id}`}>
+    <div 
+      className={`node-card ${data?.theme || ''} ${data?.runtimeStatus ? `status-${data.runtimeStatus}` : ''} ${conditionHandles.length > 0 ? 'condition-branch' : ''}`} 
+      id={`node-${id}`}
+      style={{
+        minHeight: getNodeHeight(),
+        position: 'relative'
+      }}
+    >
       <div className="node-icon">{data?.icon || '⬢'}</div>
       <div className="node-content">
         <div className="node-title">{data?.label}</div>
@@ -127,14 +175,119 @@ function CardNode({ data, id }: any) {
       {showRight && <Handle type="source" position={Position.Right} style={{ background: '#8b5cf6', width: '12px', height: '12px', border: '2px solid #fff' }} />}
       {/* 强制显示连接点用于调试 */}
       {id === 'start' && <Handle type="source" position={Position.Right} style={{ background: '#8b5cf6', width: '12px', height: '12px', border: '2px solid #fff' }} />}
-      {showMultiple && (
+      {/* 旧的multiple handles - 仅在conditionHandles为空时显示 */}
+      {showMultiple && conditionHandles.length === 0 && (
         <>
           <Handle type="source" position={Position.Right} id="if" style={{ top: '30%', background: '#10b981' }} />
           <Handle type="source" position={Position.Right} id="else" style={{ top: '70%', background: '#ef4444' }} />
         </>
       )}
+      {/* 动态条件分支出口 - 平均距离布局 */}
+      {conditionHandles.length > 0 && conditionHandles.map((handle: any, index: number) => {
+        const totalHandles = conditionHandles.length
+        
+        // 平均距离布局：将节点高度平均分配给所有出口
+        const nodeHeight = parseInt(getNodeHeight()) // 获取节点实际高度
+        const topMargin = 30 // 顶部留白
+        const bottomMargin = 30 // 底部留白
+        const availableHeight = nodeHeight - topMargin - bottomMargin
+        const handleSpacing = totalHandles > 1 ? availableHeight / (totalHandles - 1) : 0
+        const topPercent = totalHandles === 1 ? 50 : (topMargin + (index * handleSpacing)) / nodeHeight * 100
+        
+        const colors = ['#10b981', '#3b82f6', '#8b5cf6', '#ec4899', '#f59e0b', '#ef4444']
+        const color = colors[index % colors.length]
+        
+        return (
+          <div key={handle.id} style={{ 
+            position: 'absolute', 
+            right: '-6px', 
+            top: `${topPercent}%`, 
+            transform: 'translateY(-50%)',
+            zIndex: 10
+          }}>
+            <Handle 
+              type="source" 
+              position={Position.Right} 
+              id={handle.id} 
+              style={{ 
+                position: 'relative',
+                background: color, 
+                width: '12px', 
+                height: '12px', 
+                border: '2px solid #fff',
+                boxShadow: '0 2px 4px rgba(0,0,0,0.2)',
+                cursor: 'pointer'
+              }} 
+            />
+            <div style={{
+              position: 'absolute',
+              right: '16px',
+              top: '50%',
+              transform: 'translateY(-50%)',
+              fontSize: '10px',
+              whiteSpace: 'nowrap',
+              background: 'rgba(255,255,255,0.95)',
+              padding: '2px 4px',
+              borderRadius: '3px',
+              border: `1px solid ${color}`,
+              color: '#333',
+              fontWeight: 500,
+              pointerEvents: 'none',
+              boxShadow: '0 1px 3px rgba(0,0,0,0.1)'
+            }}>
+              {handle.label}
+            </div>
+          </div>
+        )
+      })}
     </div>
   )
+}
+
+// 根据条件配置生成conditionHandles
+function generateConditionHandles(config: CondConfig): Array<{ id: string; label: string }> {
+  const handles: Array<{ id: string; label: string }> = []
+  
+  // 语义匹配模式
+  if (config.semanticMatch?.enabled && config.semanticMatch.conditions?.length > 0) {
+    config.semanticMatch.conditions.forEach((cond, index) => {
+      handles.push({
+        id: `cond_${index}`,
+        label: cond.description || cond.value || `条件${index + 1}`
+      })
+    })
+  } else {
+    // 传统关键词匹配模式
+    // IF 条件
+    const ifLabel = config.if.operator === 'is_empty' || config.if.operator === 'is_not_empty' 
+      ? `${config.if.variable || 'query'} ${config.if.operator}`
+      : `${config.if.variable || 'query'} ${config.if.operator} "${config.if.value || ''}"`
+    handles.push({
+      id: 'cond_0',
+      label: `IF: ${ifLabel.length > 20 ? ifLabel.substring(0, 20) + '...' : ifLabel}`
+    })
+    
+    // ELIF 条件
+    config.elifs?.forEach((elif, index) => {
+      const elifLabel = elif.operator === 'is_empty' || elif.operator === 'is_not_empty'
+        ? `${elif.variable || 'query'} ${elif.operator}`
+        : `${elif.variable || 'query'} ${elif.operator} "${elif.value || ''}"`
+      handles.push({
+        id: `cond_${index + 1}`,
+        label: `ELIF${index + 1}: ${elifLabel.length > 20 ? elifLabel.substring(0, 20) + '...' : elifLabel}`
+      })
+    })
+  }
+  
+  // ELSE 条件（如果启用）
+  if (config.elseEnabled) {
+    handles.push({
+      id: 'cond_else',
+      label: 'ELSE'
+    })
+  }
+  
+  return handles
 }
 
 // 将nodeTypes移到组件外部，避免重新创建
@@ -143,7 +296,19 @@ const nodeTypes = { card: CardNode }
 // 初始节点和边
 const initialNodes: Node[] = [
   { id: 'start', type: 'card', position: { x: 50, y: 80 }, data: { label: '开始', icon: '🔵', theme: 'theme-blue', handles: ['right'], config: { } } },
-  { id: 'cond', type: 'card', position: { x: 180, y: 60 }, data: { label: '条件分支', icon: '🧩', theme: 'theme-cyan', handles: ['left','multiple'], config: { if: { variable: 'query', operator: 'contains', value: '技术' }, elifs: [], elseEnabled: true } as CondConfig } },
+  { 
+    id: 'cond', 
+    type: 'card', 
+    position: { x: 180, y: 60 }, 
+    data: { 
+      label: '条件分支', 
+      icon: '🧩', 
+      theme: 'theme-cyan', 
+      handles: ['left'],
+      conditionHandles: generateConditionHandles({ if: { variable: 'query', operator: 'contains', value: '技术' }, elifs: [], elseEnabled: true }),
+      config: { if: { variable: 'query', operator: 'contains', value: '技术' }, elifs: [], elseEnabled: true } as CondConfig 
+    } 
+  },
   { id: 'kb', type: 'card', position: { x: 300, y: 30 }, data: { label: '知识检索', icon: '📚', theme: 'theme-green', handles: ['left','right'], config: { topK: 3 } as KbConfig } },
   { id: 'llm', type: 'card', position: { x: 550, y: 30 }, data: { label: 'LLM', icon: '🤖', theme: 'theme-purple', handles: ['left','right'], config: { model: 'qwen-plus', temperature: 0.7, systemPrompt: '你是一个有用的中文助手。回答时要基于提供的知识片段，若无依据要明确说明。', userPrompt: '用户问题：{{query}}\n\n知识片段：\n{{kb_text}}', apiKey: '', apiUrl: '', provider: 'qwen' } as LlmConfig } },
   { id: 'reply', type: 'card', position: { x: 800, y: 30 }, data: { label: '直接回复', icon: '🟠', theme: 'theme-orange', handles: ['left'], config: { mode: 'template', template: '{{llm_text}}' } as AnswerConfig } },
@@ -152,18 +317,22 @@ const initialNodes: Node[] = [
 
 const initialEdges: Edge[] = [
   { id: 'e1', source: 'start', target: 'cond' },
-  { id: 'e1b', source: 'cond', sourceHandle: 'if', target: 'kb' },
+  { id: 'e1b', source: 'cond', sourceHandle: 'cond_0', target: 'kb' },
   { id: 'e2', source: 'kb', target: 'llm' },
   { id: 'e3', source: 'llm', target: 'reply' },
-  { id: 'e4', source: 'cond', sourceHandle: 'else', target: 'reply-else' },
+  { id: 'e4', source: 'cond', sourceHandle: 'cond_else', target: 'reply-else' },
 ]
 
 // API 函数
 async function api(path: string, body?: any) {
+  const serializedBody = body ? JSON.stringify(body) : undefined
+  if (path === '/api/http-request' && serializedBody) {
+    console.log('🌐 发送到后端的完整请求体:', serializedBody.substring(0, 500))
+  }
   const r = await fetch(path, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: body ? JSON.stringify(body) : undefined,
+    body: serializedBody,
   })
   if (!r.ok) throw new Error(await r.text())
   return r.json()
@@ -199,23 +368,41 @@ async function sseStream(path: string, body: any, onChunk: (text: string) => voi
 
 // 渲染模板
 function renderTemplate(template: string, variables: Record<string, any>): string {
-  return template.replace(/\{\{([^}]+)\}\}/g, (_, path) => {
+  return template.replace(/\{\{([^}]+)\}\}/g, (match, path) => {
     // 支持带下划线的变量名，如 llm_text_节点ID
+    let value
     if (path in variables) {
-      return String(variables[path] || '')
-    }
-    
-    // 支持点号分隔的嵌套属性，如 user.name
-    const keys = path.split('.')
-    let value = variables
-    for (const key of keys) {
-      value = value?.[key]
-      if (value === undefined) {
-        // 如果变量不存在，保持原样（不渲染为变量）
-        return `{{${path}}}`
+      value = variables[path]
+    } else {
+      // 支持点号分隔的嵌套属性，如 user.name
+      const keys = path.split('.')
+      value = variables
+      for (const key of keys) {
+        value = value?.[key]
+        if (value === undefined) {
+          // 如果变量不存在，保持原样（不渲染为变量）
+          return match
+        }
       }
     }
-    return String(value || '')
+    
+    // 将值转换为字符串
+    const stringValue = String(value || '')
+    
+    // 检查是否在JSON字符串中（简单检查：前面是否有引号）
+    // 如果是，需要转义特殊字符
+    const escapeForJSON = (str: string) => {
+      return str
+        .replace(/\\/g, '\\\\')  // 反斜杠
+        .replace(/"/g, '\\"')    // 双引号
+        .replace(/\n/g, '\\n')   // 换行符
+        .replace(/\r/g, '\\r')   // 回车符
+        .replace(/\t/g, '\\t')   // 制表符
+        .replace(/\f/g, '\\f')   // 换页符
+        .replace(/\b/g, '\\b')   // 退格符
+    }
+    
+    return escapeForJSON(stringValue)
   })
 }
 
@@ -485,20 +672,31 @@ async function runFlow(
   nodes: Node[],
   edges: Edge[],
   serverConfig: any,
+  workflowId: string,
   onStatus?: (nodeId: string, status: 'running' | 'done') => void,
   onOutput?: (nodeId: string, output: string) => void,
+  options?: { isBackgroundMode?: boolean, loopConfig?: LoopConfig, shouldStop?: () => boolean }
 ): Promise<RunContext> {
   const ctx: RunContext = { 
     query, 
     variables: { 
       query,
       kb_text: '',
-      http_text: ''
+      http_text: '',
+      _iteration: 0  // 当前迭代次数
     } 
   }
 
-  // 条件分支执行函数
-  function executeConditionalNode(nodeId: string): string | null {
+  // 检查是否为后台模式
+  const isBackgroundMode = options?.isBackgroundMode || false
+  const loopConfig = options?.loopConfig
+  const shouldStop = options?.shouldStop || (() => false)
+
+  // 如果是后台模式，不输出到聊天框
+  const safeOnOutput = isBackgroundMode ? undefined : onOutput
+
+  // 条件分支执行函数 - 返回匹配的条件handle ID
+  async function executeConditionalNode(nodeId: string): Promise<string | null> {
     const cnode = nodes.find((n) => n.id === nodeId)
     if (!cnode) return null
     
@@ -531,11 +729,51 @@ async function runFlow(
       }
     }
     
-    if (evalCond(cfg.if)) return 'if'
-    for (const elif of cfg.elifs) {
-      if (evalCond(elif)) return 'elif'
+    // 如果启用了语义匹配
+    if (cfg.semanticMatch?.enabled && cfg.semanticMatch.conditions?.length > 0) {
+      try {
+        const query = getVal('query') || ctx.query
+        const conditions = cfg.semanticMatch.conditions.map(cond => ({
+          description: cond.description,
+          value: cond.value
+        }))
+        
+        const response = await api('/api/semantic-match', {
+          query,
+          conditions,
+          provider: cfg.semanticMatch.provider,
+          model: cfg.semanticMatch.model,
+          temperature: cfg.semanticMatch.temperature,
+          apiKey: cfg.semanticMatch.apiKey,
+          apiUrl: cfg.semanticMatch.apiUrl
+        })
+        
+        if (response.success && response.matchedIndex > 0) {
+          // 返回具体匹配的条件索引
+          const matchedIndex = response.matchedIndex - 1
+          return `cond_${matchedIndex}`
+        }
+        
+        // 语义匹配失败或无匹配，回退到传统匹配
+        console.warn('语义匹配失败，回退到传统匹配:', response.error)
+      } catch (error) {
+        console.error('语义匹配错误:', error)
+        // 出错时回退到传统匹配
+      }
     }
-    return cfg.elseEnabled ? 'else' : null
+    
+    // 传统关键词匹配
+    if (evalCond(cfg.if)) return 'cond_0' // IF条件对应cond_0
+    
+    // 检查所有ELIF条件
+    for (let i = 0; i < (cfg.elifs?.length || 0); i++) {
+      if (evalCond(cfg.elifs[i])) {
+        return `cond_${i + 1}` // ELIF条件对应cond_1, cond_2, ...
+      }
+    }
+    
+    // ELSE条件
+    return cfg.elseEnabled ? 'cond_else' : null
   }
 
   // 执行单个节点
@@ -546,21 +784,58 @@ async function runFlow(
     const nodeType = node.data?.label
     onStatus?.(nodeId, 'running')
 
-    if (nodeType === '开始') {
-      // 开始节点不需要执行
+    if (nodeType === '开始' || nodeType === '开始（聊天）' || nodeType === '开始（后台）') {
+      // 开始节点不需要执行，只是设置模式
+      const cfg = (node.data?.config || { mode: 'chat' }) as StartConfig
+      // 模式信息已在外层设置
+    } else if (nodeType === 'Query触发器') {
+      // Query触发器节点，只有当有query时才继续执行
+      const cfg = (node.data?.config || { enabled: true }) as QueryTriggerConfig
+      if (!ctx.query || !ctx.query.trim()) {
+        // 如果没有query，停止执行后续节点
+        if (safeOnOutput) safeOnOutput(nodeId, '⏸️ 等待Query输入...')
+        throw new Error('QUERY_REQUIRED') // 特殊错误，用于停止执行但不显示错误
+      }
+      if (safeOnOutput) safeOnOutput(nodeId, `✓ Query接收: ${ctx.query}`)
+    } else if (nodeType === '循环定时器') {
+      const cfg = (node.data?.config || { enabled: true, interval: 60, maxIterations: 0 }) as LoopConfig
+      // 循环定时器节点不在这里执行，而是在外层控制
+      if (safeOnOutput) safeOnOutput(nodeId, `⏱️ 循环定时器：间隔${cfg.interval}秒${cfg.maxIterations ? `，最多${cfg.maxIterations}次` : '，无限循环'}`)
     } else if (nodeType === '条件分支') {
-      const branch = executeConditionalNode(nodeId)
+      const branch = await executeConditionalNode(nodeId)
       ctx.variables.condition = { branch }
-      if (onOutput) onOutput(nodeId, `条件分支执行：${branch}`)
+      if (safeOnOutput) safeOnOutput(nodeId, `条件分支执行：${branch}`)
     } else if (nodeType === '知识检索') {
-      const cfg = (node.data?.config || { topK: 3 }) as KbConfig
+      const cfg = (node.data?.config || { topK: 3, source: 'static' }) as KbConfig
       try {
-        const matches = await api('/api/vector/search', { query: ctx.query, topK: cfg.topK })
+        let matches
+        // 根据数据源调用不同的 API
+        if (cfg.source === 'dynamic') {
+          // 调用动态知识库
+          const response = await api('/api/knowledge/search', { 
+            query: ctx.query, 
+            top_k: cfg.topK 
+          })
+          matches = {
+            matches: (response.results || []).map((r: any) => ({
+              text: r.content || r.text,
+              title: r.title,
+              score: r.similarity
+            }))
+          }
+        } else {
+          // 调用静态向量数据库
+          matches = await api('/api/vector/search', { 
+            query: ctx.query, 
+            topK: cfg.topK 
+          })
+        }
+        
         ctx.variables.kb_text = matches.matches.map((m: any) => m.text).join('\n\n')
         ctx.knowledgeMatches = matches.matches
-        if (onOutput) onOutput(nodeId, `${ctx.variables.kb_text}`)
+        if (safeOnOutput) safeOnOutput(nodeId, `${ctx.variables.kb_text}`)
       } catch (error) {
-        if (onOutput) onOutput(nodeId, `**知识检索失败**\n\n${(error as Error).message}`)
+        if (safeOnOutput) safeOnOutput(nodeId, `**知识检索失败**\n\n${(error as Error).message}`)
       }
     } else if (nodeType === 'LLM') {
       const cfg = (node.data?.config || { 
@@ -573,9 +848,36 @@ async function runFlow(
         provider: 'qwen'
       }) as LlmConfig
       
+      // 先搜索聊天历史作为上下文
+      let chatContext = ''
+      try {
+        const searchResponse = await api('/api/chat/search-context', {
+          query: ctx.query,
+          workflowId: workflowId,
+          topK: 3
+        })
+        
+        console.log('🔍 搜索聊天历史结果:', searchResponse)
+        
+        if (searchResponse.success && searchResponse.results && searchResponse.results.length > 0) {
+          const contextParts = searchResponse.results.map((r: any, i: number) => 
+            `[历史对话${i + 1}]\n问题: ${r.question}\n回答: ${r.answer}`
+          ).join('\n\n')
+          chatContext = `\n\n以下是相关的历史对话记录，请参考这些上下文来回答用户问题：\n\n${contextParts}\n\n`
+          console.log('✅ 已添加聊天历史上下文:', chatContext)
+        } else {
+          console.log('ℹ️ 未找到相关历史对话')
+        }
+      } catch (contextError) {
+        console.warn('❌ 搜索聊天历史失败:', contextError)
+      }
+      
+      // 将聊天历史上下文添加到用户提示中
+      const userPromptWithContext = chatContext + renderTemplate(cfg.userPrompt, ctx.variables)
+      
       const messages = [
         { role: 'system', content: renderTemplate(cfg.systemPrompt, ctx.variables) },
-        { role: 'user', content: renderTemplate(cfg.userPrompt, ctx.variables) }
+        { role: 'user', content: userPromptWithContext }
       ]
       
       let text = ''
@@ -586,16 +888,17 @@ async function runFlow(
           temperature: cfg.temperature,
           apiKey: cfg.apiKey,
           apiUrl: cfg.apiUrl,
-          provider: cfg.provider || 'qwen'
+          provider: cfg.provider || 'qwen',
+          workflowId: workflowId
         }, (chunk) => {
           text += chunk
-          if (onOutput) onOutput(nodeId, text)
+          if (safeOnOutput) safeOnOutput(nodeId, text)
         })
         
         ctx.variables[`llm_text_${nodeId}`] = text
         ctx.llmText = text
       } catch (error) {
-        if (onOutput) onOutput(nodeId, `**LLM调用失败**\n\n${(error as Error).message}`)
+        if (safeOnOutput) safeOnOutput(nodeId, `**LLM调用失败**\n\n${(error as Error).message}`)
       }
     } else if (nodeType === 'HTTP请求') {
       const defaultConfig: HttpConfig = { 
@@ -699,11 +1002,14 @@ async function runFlow(
         // 将variables数组转换为对象
         const variablesObj = cfg.variables.reduce((acc, v) => ({ ...acc, [v.key]: v.value }), {})
         
+        // 对于JSON类型的body，直接发送字符串，让后端的/api/http-request处理
+        let bodyToSend = renderedBody
+        
         const result = await api('/api/http-request', {
           method: cfg.method,
           url: renderedUrl,
           headers: authHeaders,
-          body: renderedBody,
+          body: bodyToSend,
           variables: { ...ctx.variables, ...variablesObj },
           auth: cfg.auth,
           advanced: cfg.advanced,
@@ -713,9 +1019,16 @@ async function runFlow(
         
         ctx.variables.http_data = result.json || result.content
         ctx.variables.http_text = result.content
-        if (onOutput) onOutput(nodeId, `${ctx.variables.http_text}`)
+        ctx.variables[`http_data_${nodeId}`] = result.json || result.content
+        ctx.variables[`http_text_${nodeId}`] = result.content
+        
+        // 为了支持点号访问，直接使用 nodeId 作为变量名
+        if (result.json) {
+          ctx.variables[nodeId] = result.json
+        }
+        if (safeOnOutput) safeOnOutput(nodeId, `${ctx.variables.http_text}`)
       } catch (error) {
-        if (onOutput) onOutput(nodeId, `**HTTP请求失败**\n\n${(error as Error).message}`)
+        if (safeOnOutput) safeOnOutput(nodeId, `**HTTP请求失败**\n\n${(error as Error).message}`)
       }
     } else if (nodeType === '数据分析') {
       const cfg = (node.data?.config || { 
@@ -732,31 +1045,25 @@ async function runFlow(
         
         // 检查是否有上传的文件数据
         if (cfg.uploadedData && cfg.uploadedHeaders) {
-          // 使用带文件数据的分析API
-          const response = await fetch('/api/analysis-with-data', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              apiUrl: cfg.apiUrl,
-              apiKey: cfg.apiKey,
-              question,
-              data: cfg.uploadedData,
-              headers: cfg.uploadedHeaders,
-              provider: cfg.provider,
-              model: cfg.model,
-              temperature: cfg.temperature
-            })
+          // 使用带文件数据的流式分析API
+          let text = ''
+          await sseStream('/api/analysis-with-data', { 
+            apiUrl: cfg.apiUrl,
+            apiKey: cfg.apiKey,
+            question,
+            data: cfg.uploadedData,
+            headers: cfg.uploadedHeaders,
+            provider: cfg.provider,
+            model: cfg.model,
+            temperature: cfg.temperature
+          }, (chunk) => {
+            text += chunk
+            if (safeOnOutput) safeOnOutput(nodeId, text)
           })
           
-          if (!response.ok) {
-            throw new Error('数据分析请求失败')
-          }
-          
-          const result = await response.json()
-          const text = result.analysis
-          
-          if (onOutput) onOutput(nodeId, text)
           ctx.variables[`analysis_text_${nodeId}`] = text
+          // 设置最终答案
+          ctx.variables.answer = text
         } else {
           // 使用原有的流式分析API
           let text = ''
@@ -769,13 +1076,15 @@ async function runFlow(
             temperature: cfg.temperature
           }, (chunk) => {
             text += chunk
-            if (onOutput) onOutput(nodeId, text)
+            if (safeOnOutput) safeOnOutput(nodeId, text)
           })
           
           ctx.variables[`analysis_text_${nodeId}`] = text
+          // 设置最终答案
+          ctx.variables.answer = text
         }
       } catch (error) {
-        if (onOutput) onOutput(nodeId, `**数据分析失败**\n\n${(error as Error).message}`)
+        if (safeOnOutput) safeOnOutput(nodeId, `**数据分析失败**\n\n${(error as Error).message}`)
       }
     } else if (nodeType === '直接回复') {
       const cfg = (node.data?.config || { mode: 'template', template: '{{query}}' }) as AnswerConfigEx
@@ -806,18 +1115,30 @@ async function runFlow(
         console.log('渲染结果:', renderedTemplate)
         ctx.variables.answer = renderedTemplate
       }
-      if (onOutput) onOutput(nodeId, `${ctx.variables.answer}`)
+      if (safeOnOutput) safeOnOutput(nodeId, `${ctx.variables.answer}`)
     }
 
     onStatus?.(nodeId, 'done')
   }
 
-  // 从开始节点开始执行，按照边的连接顺序执行
-  const startNode = nodes.find(n => n.id === 'start')
-  if (!startNode) return ctx
+  // 查找所有开始节点（支持多个开始节点）
+  const startNodes = nodes.filter(n => 
+    n.data?.label === '开始' || 
+    n.data?.label === '开始（聊天）' || 
+    n.data?.label === '开始（后台）' ||
+    n.id === 'start'
+  )
   
-  // 执行开始节点
-  await executeNode('start')
+  // 根据模式过滤开始节点
+  const relevantStartNodes = startNodes.filter(n => {
+    const cfg = (n.data?.config || { mode: 'chat' }) as StartConfig
+    return cfg.mode === (isBackgroundMode ? 'background' : 'chat')
+  })
+  
+  if (relevantStartNodes.length === 0) {
+    console.log(`没有找到${isBackgroundMode ? '后台' : '聊天'}模式的开始节点`)
+    return ctx
+  }
   
   // 递归执行节点
   async function executeNodeChain(nodeId: string) {
@@ -826,20 +1147,29 @@ async function runFlow(
     
     // 如果是条件分支节点，需要根据条件选择分支
     if (node.data?.label === '条件分支') {
-      const branch = executeConditionalNode(nodeId)
-      if (branch === 'if') {
-        // 执行IF分支
-        const ifEdges = edges.filter(e => e.source === nodeId && e.sourceHandle === 'if')
-        for (const ifEdge of ifEdges) {
-          await executeNode(ifEdge.target)
-          await executeNodeChain(ifEdge.target)
+      const branchHandle = await executeConditionalNode(nodeId)
+      if (branchHandle) {
+        // 根据返回的handle ID查找对应的边
+        const branchEdges = edges.filter(e => e.source === nodeId && e.sourceHandle === branchHandle)
+        
+        // 兼容旧的边配置（如果没有找到新格式的边，尝试旧格式）
+        if (branchEdges.length === 0) {
+          // 兼容旧的'if', 'elif', 'else'格式
+          if (branchHandle === 'cond_0') {
+            const oldIfEdges = edges.filter(e => e.source === nodeId && e.sourceHandle === 'if')
+            branchEdges.push(...oldIfEdges)
+          } else if (branchHandle === 'cond_else') {
+            const oldElseEdges = edges.filter(e => e.source === nodeId && e.sourceHandle === 'else')
+            branchEdges.push(...oldElseEdges)
+          } else if (branchHandle.startsWith('cond_')) {
+            const oldElifEdges = edges.filter(e => e.source === nodeId && e.sourceHandle === 'elif')
+            branchEdges.push(...oldElifEdges)
+          }
         }
-      } else if (branch === 'else') {
-        // 执行ELSE分支
-        const elseEdges = edges.filter(e => e.source === nodeId && e.sourceHandle === 'else')
-        for (const elseEdge of elseEdges) {
-          await executeNode(elseEdge.target)
-          await executeNodeChain(elseEdge.target)
+        
+        for (const branchEdge of branchEdges) {
+          await executeNode(branchEdge.target)
+          await executeNodeChain(branchEdge.target)
         }
       }
     } else {
@@ -854,13 +1184,128 @@ async function runFlow(
     }
   }
   
-  // 找到从开始节点出发的边并开始执行
-  const startEdges = edges.filter(e => e.source === 'start')
-  for (const edge of startEdges) {
-    await executeNodeChain(edge.target)
+  // 执行所有相关的开始节点
+  for (const startNode of relevantStartNodes) {
+    try {
+      await executeNode(startNode.id)
+      
+      // 找到从该开始节点出发的边并开始执行
+      const startEdges = edges.filter(e => e.source === startNode.id)
+      for (const edge of startEdges) {
+        await executeNodeChain(edge.target)
+      }
+    } catch (error) {
+      if ((error as Error).message === 'QUERY_REQUIRED') {
+        // Query触发器节点要求输入，跳过此工作流
+        console.log(`工作流 ${startNode.id} 需要Query输入，已跳过`)
+        continue
+      }
+      throw error
+    }
   }
   
   return ctx
+}
+
+// 循环执行工作流（后台模式）
+async function runFlowLoop(
+  query: string,
+  nodes: Node[],
+  edges: Edge[],
+  serverConfig: any,
+  workflowId: string,
+  onStatus?: (nodeId: string, status: 'running' | 'done') => void,
+  onOutput?: (nodeId: string, output: string) => void,
+  onLog?: (message: string) => void,
+  stopSignal?: () => boolean
+): Promise<void> {
+  // 查找所有后台模式的开始节点
+  const backgroundStartNodes = nodes.filter(n => {
+    const isStartNode = n.data?.label === '开始' || 
+                       n.data?.label === '开始（聊天）' || 
+                       n.data?.label === '开始（后台）' ||
+                       n.id === 'start'
+    if (!isStartNode) return false
+    
+    const cfg = (n.data?.config || { mode: 'chat' }) as StartConfig
+    return cfg.mode === 'background'
+  })
+  
+  if (backgroundStartNodes.length === 0) {
+    if (onLog) onLog('⚠️ 没有找到后台模式的开始节点')
+    return
+  }
+  
+  if (onLog) onLog(`✓ 找到 ${backgroundStartNodes.length} 个后台工作流`)
+  
+  // 查找循环定时器节点
+  const loopNode = nodes.find(n => n.data?.label === '循环定时器')
+  const loopConfig: LoopConfig = loopNode?.data?.config || { enabled: false, interval: 60, maxIterations: 0 }
+  
+  if (!loopConfig.enabled) {
+    if (onLog) onLog('ℹ️ 循环定时器未启用，执行一次后退出')
+    // 不循环，执行一次
+    await runFlow(query, nodes, edges, serverConfig, workflowId, onStatus, onOutput, { 
+      isBackgroundMode: true, 
+      shouldStop: stopSignal 
+    })
+    return
+  }
+  
+  if (onLog) onLog(`⏱️ 循环定时器已启用：间隔${loopConfig.interval}秒，${loopConfig.maxIterations || 0 > 0 ? `最多${loopConfig.maxIterations}次` : '无限循环'}`)
+  
+  // 循环执行
+  let iteration = 0
+  const maxIterations = loopConfig.maxIterations || 0
+  
+  while (true) {
+    // 检查停止信号
+    if (stopSignal && stopSignal()) {
+      if (onLog) onLog(`⏹️ 循环执行已停止（第${iteration}次迭代）`)
+      break
+    }
+    
+    // 检查最大迭代次数
+    if (maxIterations > 0 && iteration >= maxIterations) {
+      if (onLog) onLog(`✅ 循环执行已完成（共${iteration}次迭代）`)
+      break
+    }
+    
+    iteration++
+    const timestamp = new Date().toLocaleString('zh-CN')
+    
+    if (onLog) onLog(`🔄 [${timestamp}] 开始第${iteration}次执行...`)
+    
+    try {
+      await runFlow(query, nodes, edges, serverConfig, workflowId, onStatus, onOutput, { 
+        isBackgroundMode: true, 
+        loopConfig,
+        shouldStop: stopSignal 
+      })
+      
+      if (onLog) onLog(`✓ [${timestamp}] 第${iteration}次执行完成`)
+    } catch (error) {
+      const errorMsg = (error as Error).message
+      if (errorMsg !== 'QUERY_REQUIRED') {
+        if (onLog) onLog(`✗ [${timestamp}] 第${iteration}次执行失败: ${errorMsg}`)
+      }
+    }
+    
+    // 等待间隔时间
+    if (loopConfig.interval > 0) {
+      if (onLog) onLog(`⏳ 等待${loopConfig.interval}秒后继续...`)
+      
+      // 分段等待，以便及时响应停止信号
+      const waitSteps = Math.max(1, loopConfig.interval)
+      for (let i = 0; i < waitSteps; i++) {
+        if (stopSignal && stopSignal()) {
+          if (onLog) onLog(`⏹️ 循环执行已停止（等待期间）`)
+          return
+        }
+        await new Promise(resolve => setTimeout(resolve, 1000))
+      }
+    }
+  }
 }
 
 // 主组件
@@ -906,6 +1351,11 @@ export default function WorkflowEditor({ workflowId, token, user, onBack, onSave
   const [workflowName, setWorkflowName] = useState('未命名工作流');
   const [serverConfig, setServerConfig] = useState(null);
   const [saveStatus, setSaveStatus] = useState('saved' as 'saved' | 'saving' | 'error');
+  
+  // 后台任务状态
+  const [isBackgroundRunning, setIsBackgroundRunning] = useState(false);
+  const [backgroundLogs, setBackgroundLogs] = useState([]);
+  const stopSignalRef = useRef(false);
 
   // 加载服务器配置
   React.useEffect(() => {
@@ -1010,6 +1460,58 @@ export default function WorkflowEditor({ workflowId, token, user, onBack, onSave
     }
   }
 
+  // 保存聊天记录到知识库
+  const saveChatToKnowledgeBase = async (question: string, answer: string) => {
+    try {
+      const response = await fetch('/api/chat/add-context', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          workflowId: workflowId,
+          question: question,
+          answer: answer,
+          timestamp: Date.now()
+        })
+      });
+      
+      if (response.ok) {
+        const data = await response.json();
+        console.log('聊天记录已保存到知识库:', data);
+      } else {
+        console.warn('保存聊天记录到知识库失败');
+      }
+    } catch (error) {
+      console.error('保存聊天记录到知识库失败:', error);
+    }
+  };
+
+  // 清除聊天记录（包括知识库）
+  const clearChatHistory = async () => {
+    try {
+      // 清除知识库中的聊天记录
+      const response = await fetch('/api/chat/clear-context', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          workflowId: workflowId
+        })
+      });
+      
+      if (response.ok) {
+        const data = await response.json();
+        console.log('知识库聊天记录已清除:', data);
+      } else {
+        console.warn('清除知识库聊天记录失败');
+      }
+    } catch (error) {
+      console.error('清除知识库聊天记录失败:', error);
+    }
+    
+    // 清除本地聊天记录
+    setChatHistory([]);
+    saveChatHistory([]);
+  };
+
   // 从 nodes 数组和 selectedNodeId 动态获取当前选中的节点
   const selected = useMemo(() => {
     if (!selectedNodeId) return null
@@ -1021,7 +1523,7 @@ export default function WorkflowEditor({ workflowId, token, user, onBack, onSave
     return edges.find(e => e.id === selectedEdgeId) || null
   }, [edges, selectedEdgeId])
 
-  // 运行工作流
+  // 运行工作流（聊天模式）
   const runWorkflow = async () => {
     if (!question.trim()) return
     setLoading(true)
@@ -1037,7 +1539,8 @@ export default function WorkflowEditor({ workflowId, token, user, onBack, onSave
       setChatHistory(newHistory)
       saveChatHistory(newHistory)
 
-      const ctx = await runFlow(question, nodes, edges, serverConfig, (nodeId, status) => {
+      // 只执行聊天模式的工作流（isBackgroundMode = false）
+      const ctx = await runFlow(question, nodes, edges, serverConfig, workflowId, (nodeId, status) => {
         setNodes((ns) => ns.map(n => n.id === nodeId ? { ...n, data: { ...n.data, runtimeStatus: status } } : n))
       }, (nodeId, output) => {
         // 获取节点信息
@@ -1090,8 +1593,20 @@ export default function WorkflowEditor({ workflowId, token, user, onBack, onSave
         return updated
       })
 
-      const finalAnswer = ctx.variables.answer || '工作流执行完成'
+      // 优先使用LLM的输出，其次是answer变量
+      const finalAnswer = ctx.llmText || ctx.variables.answer || '工作流执行完成'
       setAnswer(finalAnswer)
+      
+      console.log('💾 准备保存聊天记录 - 问题:', question, '回答:', finalAnswer)
+      
+      // 保存聊天记录到知识库（只保存有实际内容的回答）
+      if (finalAnswer && question.trim() && finalAnswer !== '工作流执行完成') {
+        await saveChatToKnowledgeBase(question, finalAnswer);
+      } else {
+        console.log('⚠️ 跳过保存（回答无效）')
+      }
+      
+      setQuestion('')
     } catch (error) {
       console.error('工作流执行失败:', error)
       
@@ -1109,6 +1624,43 @@ export default function WorkflowEditor({ workflowId, token, user, onBack, onSave
     } finally {
       setLoading(false)
     }
+  }
+
+  // 启动后台任务
+  const startBackgroundTask = async () => {
+    stopSignalRef.current = false
+    setIsBackgroundRunning(true)
+    setBackgroundLogs([])
+    
+    try {
+      await runFlowLoop(
+        '', // 后台任务默认查询为空
+        nodes,
+        edges,
+        serverConfig,
+        workflowId,
+        (nodeId, status) => {
+          // 更新节点运行状态，但不显示在聊天框
+          setNodes((ns) => ns.map(n => n.id === nodeId ? { ...n, data: { ...n.data, runtimeStatus: status } } : n))
+        },
+        undefined, // 后台模式不输出到聊天框
+        (message) => {
+          // 添加日志
+          setBackgroundLogs(prev => [...prev, `[${new Date().toLocaleTimeString()}] ${message}`])
+        },
+        () => stopSignalRef.current
+      )
+    } catch (error) {
+      setBackgroundLogs(prev => [...prev, `[${new Date().toLocaleTimeString()}] ❌ 错误: ${(error as Error).message}`])
+    } finally {
+      setIsBackgroundRunning(false)
+    }
+  }
+  
+  // 停止后台任务
+  const stopBackgroundTask = () => {
+    stopSignalRef.current = true
+    setBackgroundLogs(prev => [...prev, `[${new Date().toLocaleTimeString()}] ⏹️ 正在停止后台任务...`])
   }
 
   // 创建新节点
@@ -1129,7 +1681,7 @@ export default function WorkflowEditor({ workflowId, token, user, onBack, onSave
             icon: '📚',
             theme: 'theme-green',
             handles: ['left', 'right'],
-            config: { topK: 3 } as KbConfig
+            config: { topK: 3, source: 'static' } as KbConfig
           }
         }
         break
@@ -1213,6 +1765,11 @@ export default function WorkflowEditor({ workflowId, token, user, onBack, onSave
         }
         break
       case 'cond':
+        const defaultCondConfig: CondConfig = { 
+          if: { variable: 'query', operator: 'contains', value: '技术' }, 
+          elifs: [], 
+          elseEnabled: true 
+        }
         newNode = {
           id,
           type: 'card',
@@ -1221,13 +1778,71 @@ export default function WorkflowEditor({ workflowId, token, user, onBack, onSave
             label: '条件分支',
             icon: '🧩',
             theme: 'theme-cyan',
-            handles: ['left', 'multiple'],
-            config: { if: { variable: 'query', operator: 'contains', value: '技术' }, elifs: [], elseEnabled: true } as CondConfig
+            handles: ['left'],
+            conditionHandles: generateConditionHandles(defaultCondConfig),
+            config: defaultCondConfig
+          }
+        }
+        break
+      case 'start_chat':
+        newNode = {
+          id,  // 使用动态ID，允许多个开始节点
+          type: 'card',
+          position: { x: baseX, y: baseY },
+          data: {
+            label: '开始（聊天）',
+            icon: '💬',
+            theme: 'theme-blue',
+            handles: ['right'],
+            config: { mode: 'chat' } as StartConfig
+          }
+        }
+        break
+      case 'start_background':
+        newNode = {
+          id,  // 使用动态ID，允许多个开始节点
+          type: 'card',
+          position: { x: baseX, y: baseY },
+          data: {
+            label: '开始（后台）',
+            icon: '⚙️',
+            theme: 'theme-gray',
+            handles: ['right'],
+            config: { mode: 'background' } as StartConfig
+          }
+        }
+        break
+      case 'query':
+        newNode = {
+          id,
+          type: 'card',
+          position: { x: baseX, y: baseY },
+          data: {
+            label: 'Query触发器',
+            icon: '🎯',
+            theme: 'theme-green',
+            handles: ['left', 'right'],
+            config: { enabled: true } as QueryTriggerConfig
+          }
+        }
+        break
+      case 'loop':
+        newNode = {
+          id,
+          type: 'card',
+          position: { x: baseX, y: baseY },
+          data: {
+            label: '循环定时器',
+            icon: '⏱️',
+            theme: 'theme-indigo',
+            handles: ['left', 'right'],
+            config: { enabled: true, interval: 60, maxIterations: 0 } as LoopConfig
           }
         }
         break
     }
     
+    // 所有节点都直接添加，不再替换
     setNodes(nds => [...nds, newNode])
     setSelectedNodeId(id)
     setShowNewNodeMenu(false)
@@ -1367,8 +1982,58 @@ export default function WorkflowEditor({ workflowId, token, user, onBack, onSave
           {loading ? '发送中...' : '发送'}
         </button>
       </div>
+      
+      {/* 后台任务状态和日志 */}
+      {isBackgroundRunning && (
+        <div style={{
+          borderTop: '2px solid #3b82f6',
+          backgroundColor: '#eff6ff',
+          padding: '8px 12px'
+        }}>
+          <div style={{
+            display: 'flex',
+            justifyContent: 'space-between',
+            alignItems: 'center',
+            marginBottom: '8px'
+          }}>
+            <span style={{ fontSize: '13px', fontWeight: '600', color: '#1e40af' }}>
+              🔄 后台任务运行中...
+            </span>
+            <button
+              onClick={() => setBackgroundLogs([])}
+              style={{
+                fontSize: '11px',
+                padding: '2px 6px',
+                background: '#e5e7eb',
+                border: 'none',
+                borderRadius: '3px',
+                cursor: 'pointer'
+              }}
+            >
+              清空日志
+            </button>
+          </div>
+          {backgroundLogs.length > 0 && (
+            <div style={{
+              maxHeight: '120px',
+              overflowY: 'auto',
+              backgroundColor: '#f9fafb',
+              border: '1px solid #e5e7eb',
+              borderRadius: '4px',
+              padding: '6px 8px',
+              fontSize: '11px',
+              fontFamily: 'monospace',
+              color: '#374151'
+            }}>
+              {backgroundLogs.slice(-15).map((log, idx) => (
+                <div key={idx} style={{ marginBottom: '2px' }}>{log}</div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
     </div>
-  ), [question, loading, chatHistory])
+  ), [question, loading, chatHistory, isBackgroundRunning, backgroundLogs])
 
   // 右侧配置面板
   const rightPanel = useMemo(() => {
@@ -1411,10 +2076,215 @@ export default function WorkflowEditor({ workflowId, token, user, onBack, onSave
       else if (label.includes('HTTP')) nodeType = 'http'
       else if (label.includes('数据分析')) nodeType = 'analysis'
       else if (label.includes('条件分支')) nodeType = 'cond'
+      else if (label.includes('循环定时器')) nodeType = 'loop'
+      else if (label.includes('开始')) nodeType = 'start'
+      else if (label.includes('Query触发器')) nodeType = 'query'
+    }
+    
+    // 处理Query触发器配置
+    if (nodeType === 'query') {
+      const cfg: QueryTriggerConfig = selected.data?.config || { enabled: true }
+      return (
+        <div className="panel">
+          <div className="panel-title">Query触发器配置</div>
+          <div style={{ 
+            backgroundColor: '#f3f4f6', 
+            padding: '8px', 
+            borderRadius: '4px', 
+            marginBottom: '16px',
+            fontSize: '12px',
+            color: '#6b7280'
+          }}>
+            <strong>节点 ID:</strong> {selected.id}
+          </div>
+          <label style={{display:'flex', alignItems:'center', marginBottom:16}}>
+            <input 
+              type="checkbox" 
+              checked={cfg.enabled}
+              onChange={(e) => setNodes((ns) => ns.map(n => n.id === selected.id ? { 
+                ...n, 
+                data: { 
+                  ...n.data, 
+                  config: { ...cfg, enabled: e.target.checked } 
+                } 
+              } : n))}
+              style={{marginRight:8}}
+            />
+            <strong>启用Query触发</strong>
+          </label>
+          <div style={{marginTop:8, fontSize:12, color:'#64748b'}}>
+            💡 当用户在聊天框发送消息时才执行工作流<br/>
+            💡 <strong>用于聊天模式</strong>：连接到"开始（聊天）"节点后<br/>
+            💡 如果没有Query输入，工作流将暂停在此节点
+          </div>
+          <div style={{marginTop:12, padding:12, border:'1px solid #10b981', borderRadius:6, backgroundColor:'#d1fae5'}}>
+            <div style={{fontSize:13, fontWeight:500, color:'#065f46', marginBottom:4}}>🎯 使用场景</div>
+            <div style={{fontSize:12, color:'#047857'}}>
+              <strong>聊天交互工作流</strong>：<br/>
+              开始（聊天） → Query触发器 → 知识检索 → LLM → 回复<br/>
+              <br/>
+              只有当用户发送消息时，才会触发后续节点执行
+            </div>
+          </div>
+        </div>
+      )
+    }
+    
+    // 处理开始节点配置
+    if (nodeType === 'start' || id === 'start') {
+      const cfg: StartConfig = selected.data?.config || { mode: 'chat' }
+      return (
+        <div className="panel">
+          <div className="panel-title">{selected.data?.label || '开始节点'}配置</div>
+          <div style={{ 
+            backgroundColor: '#f3f4f6', 
+            padding: '8px', 
+            borderRadius: '4px', 
+            marginBottom: '16px',
+            fontSize: '12px',
+            color: '#6b7280'
+          }}>
+            <strong>节点 ID:</strong> {selected.id}
+          </div>
+          <label>运行模式：
+            <select 
+              value={cfg.mode}
+              onChange={(e) => {
+                const newMode = e.target.value as 'chat' | 'background'
+                const newLabel = newMode === 'chat' ? '开始（聊天）' : '开始（后台）'
+                const newIcon = newMode === 'chat' ? '💬' : '⚙️'
+                setNodes((ns) => ns.map(n => n.id === selected.id ? { 
+                  ...n, 
+                  data: { 
+                    ...n.data, 
+                    label: newLabel,
+                    icon: newIcon,
+                    config: { ...cfg, mode: newMode } 
+                  } 
+                } : n))
+              }}
+            >
+              <option value="chat">聊天模式（显示输出）</option>
+              <option value="background">后台模式（静默运行）</option>
+            </select>
+          </label>
+          <div style={{marginTop:8, fontSize:12, color:'#64748b'}}>
+            💡 <strong>聊天模式</strong>：所有节点输出显示在聊天框中<br/>
+            💡 <strong>后台模式</strong>：工作流后台运行，不显示输出（适合持续监听）
+          </div>
+          {cfg.mode === 'background' && (
+            <div style={{marginTop:12, padding:12, border:'1px solid #fbbf24', borderRadius:6, backgroundColor:'#fef3c7'}}>
+              <div style={{fontSize:13, fontWeight:500, color:'#92400e', marginBottom:4}}>⚠️ 后台模式提示</div>
+              <div style={{fontSize:12, color:'#78350f'}}>
+                • 建议配合"循环定时器"节点使用<br/>
+                • 工作流将持续在后台运行<br/>
+                • 不会在聊天框显示任何输出<br/>
+                • 适合API监听、数据采集等场景
+              </div>
+            </div>
+          )}
+        </div>
+      )
+    }
+    
+    // 处理循环定时器节点配置
+    if (nodeType === 'loop') {
+      const cfg: LoopConfig = selected.data?.config || { enabled: true, interval: 60, maxIterations: 0 }
+      return (
+        <div className="panel">
+          <div className="panel-title">循环定时器配置</div>
+          <div style={{ 
+            backgroundColor: '#f3f4f6', 
+            padding: '8px', 
+            borderRadius: '4px', 
+            marginBottom: '16px',
+            fontSize: '12px',
+            color: '#6b7280'
+          }}>
+            <strong>节点 ID:</strong> {selected.id}
+          </div>
+          <label style={{display:'flex', alignItems:'center', marginBottom:16}}>
+            <input 
+              type="checkbox" 
+              checked={cfg.enabled}
+              onChange={(e) => setNodes((ns) => ns.map(n => n.id === selected.id ? { 
+                ...n, 
+                data: { 
+                  ...n.data, 
+                  config: { ...cfg, enabled: e.target.checked } 
+                } 
+              } : n))}
+              style={{marginRight:8}}
+            />
+            <strong>启用循环执行</strong>
+          </label>
+          {cfg.enabled && (
+            <>
+              <label>循环间隔（秒）：
+                <input 
+                  type="number" 
+                  min="1" 
+                  value={cfg.interval}
+                  onChange={(e) => setNodes((ns) => ns.map(n => n.id === selected.id ? { 
+                    ...n, 
+                    data: { 
+                      ...n.data, 
+                      config: { ...cfg, interval: parseInt(e.target.value) || 60 } 
+                    } 
+                  } : n))}
+                />
+              </label>
+              <label>最大迭代次数（0=无限）：
+                <input 
+                  type="number" 
+                  min="0" 
+                  value={cfg.maxIterations || 0}
+                  onChange={(e) => setNodes((ns) => ns.map(n => n.id === selected.id ? { 
+                    ...n, 
+                    data: { 
+                      ...n.data, 
+                      config: { ...cfg, maxIterations: parseInt(e.target.value) || 0 } 
+                    } 
+                  } : n))}
+                />
+              </label>
+              <div style={{marginTop:8, fontSize:12, color:'#64748b'}}>
+                💡 每隔 <strong>{cfg.interval}秒</strong> 执行一次工作流<br/>
+                {(cfg.maxIterations || 0) > 0 ? 
+                  `💡 最多执行 ${cfg.maxIterations || 0} 次后自动停止` : 
+                  '💡 将无限循环执行，直到手动停止'
+                }
+              </div>
+              <div style={{marginTop:12, padding:12, border:'1px solid #3b82f6', borderRadius:6, backgroundColor:'#eff6ff'}}>
+                <div style={{fontSize:13, fontWeight:500, color:'#1e40af', marginBottom:4}}>📊 使用示例</div>
+                <div style={{fontSize:12, color:'#1e3a8a'}}>
+                  • <strong>API监听</strong>：每60秒检查一次API数据变化<br/>
+                  • <strong>数据采集</strong>：定期获取并存储数据<br/>
+                  • <strong>状态检查</strong>：持续监控系统状态<br/>
+                  • <strong>定时任务</strong>：按固定间隔执行操作
+                </div>
+              </div>
+            </>
+          )}
+        </div>
+      )
     }
     
     if (nodeType === 'cond') {
-        const cfg: CondConfig = selected.data?.config || { if: { variable: 'query', operator: 'contains', value: '' }, elifs: [], elseEnabled: true }
+        const cfg: CondConfig = selected.data?.config || { 
+          if: { variable: 'query', operator: 'contains', value: '' }, 
+          elifs: [], 
+          elseEnabled: true,
+          semanticMatch: {
+            enabled: false,
+            provider: 'qwen',
+            model: 'qwen-plus',
+            temperature: 0.1,
+            apiKey: '',
+            apiUrl: '',
+            conditions: []
+          }
+        }
         return (
           <div className="panel">
             <div className="panel-title">条件分支配置</div>
@@ -1428,13 +2298,330 @@ export default function WorkflowEditor({ workflowId, token, user, onBack, onSave
             }}>
               <strong>节点 ID:</strong> {selected.id}
             </div>
+            
+            {/* 语义匹配开关 */}
+            <div style={{ marginBottom: '16px', padding: '12px', border: '1px solid #e5e7eb', borderRadius: '8px' }}>
+              <label style={{ display: 'flex', alignItems: 'center', marginBottom: '8px' }}>
+                <input 
+                  type="checkbox" 
+                  checked={cfg.semanticMatch?.enabled || false}
+                  onChange={(e) => setNodes((ns) => ns.map(n => n.id === selected.id ? { 
+                    ...n, 
+                    data: { 
+                      ...n.data, 
+                      config: { 
+                        ...cfg, 
+                        semanticMatch: { 
+                          ...cfg.semanticMatch, 
+                          enabled: e.target.checked 
+                        } 
+                      } 
+                    } 
+                  } : n))}
+                  style={{ marginRight: '8px' }}
+                />
+                <strong>启用语义匹配</strong>
+              </label>
+              <div style={{ fontSize: '12px', color: '#6b7280', marginTop: '4px' }}>
+                使用AI模型进行语义理解，支持更灵活的条件判断
+              </div>
+            </div>
+            
+            {/* 语义匹配配置 */}
+            {cfg.semanticMatch?.enabled && (
+              <div style={{ marginBottom: '16px', padding: '12px', border: '1px solid #d1d5db', borderRadius: '8px', backgroundColor: '#f9fafb' }}>
+                <div className="panel-subtitle">语义匹配配置</div>
+                
+                <label>模型提供商：
+                  <select 
+                    value={cfg.semanticMatch.provider}
+                    onChange={(e) => setNodes((ns) => ns.map(n => n.id === selected.id ? { 
+                      ...n, 
+                      data: { 
+                        ...n.data, 
+                        config: { 
+                          ...cfg, 
+                          semanticMatch: { 
+                            ...cfg.semanticMatch, 
+                            provider: e.target.value 
+                          } 
+                        } 
+                      } 
+                    } : n))}
+                  >
+                    <option value="qwen">通义千问</option>
+                    <option value="openai">OpenAI</option>
+                    <option value="openrouter">OpenRouter</option>
+                    <option value="local">本地模型</option>
+                  </select>
+                </label>
+                
+                <label>模型名称：
+                  <input 
+                    value={cfg.semanticMatch.model}
+                    onChange={(e) => setNodes((ns) => ns.map(n => n.id === selected.id ? { 
+                      ...n, 
+                      data: { 
+                        ...n.data, 
+                        config: { 
+                          ...cfg, 
+                          semanticMatch: { 
+                            ...cfg.semanticMatch, 
+                            model: e.target.value 
+                          } 
+                        } 
+                      } 
+                    } : n))}
+                    placeholder="qwen-plus"
+                  />
+                </label>
+                
+                <label>温度参数：
+                  <input 
+                    type="number" 
+                    min="0" 
+                    max="2" 
+                    step="0.1"
+                    value={cfg.semanticMatch.temperature}
+                    onChange={(e) => setNodes((ns) => ns.map(n => n.id === selected.id ? { 
+                      ...n, 
+                      data: { 
+                        ...n.data, 
+                        config: { 
+                          ...cfg, 
+                          semanticMatch: { 
+                            ...cfg.semanticMatch, 
+                            temperature: parseFloat(e.target.value) 
+                          } 
+                        } 
+                      } 
+                    } : n))}
+                  />
+                </label>
+                
+                {cfg.semanticMatch.provider !== 'local' && (
+                  <label>API Key：
+                    <input 
+                      type="password"
+                      value={cfg.semanticMatch.apiKey}
+                      onChange={(e) => setNodes((ns) => ns.map(n => n.id === selected.id ? { 
+                        ...n, 
+                        data: { 
+                          ...n.data, 
+                          config: { 
+                            ...cfg, 
+                            semanticMatch: { 
+                              ...cfg.semanticMatch, 
+                              apiKey: e.target.value 
+                            } 
+                          } 
+                        } 
+                      } : n))}
+                      placeholder="输入API密钥"
+                    />
+                  </label>
+                )}
+                
+                <label>API URL：
+                  <input 
+                    value={cfg.semanticMatch.apiUrl}
+                    onChange={(e) => setNodes((ns) => ns.map(n => n.id === selected.id ? { 
+                      ...n, 
+                      data: { 
+                        ...n.data, 
+                        config: { 
+                          ...cfg, 
+                          semanticMatch: { 
+                            ...cfg.semanticMatch, 
+                            apiUrl: e.target.value 
+                          } 
+                        } 
+                      } 
+                    } : n))}
+                    placeholder="API地址（可选）"
+                  />
+                </label>
+                
+                <div className="panel-subtitle">语义条件配置</div>
+                <div style={{ fontSize: '12px', color: '#6b7280', marginBottom: '8px' }}>
+                  定义语义匹配的条件，AI会根据用户查询的语义意图进行匹配
+                </div>
+                
+                <button 
+                  onClick={() => setNodes((ns) => ns.map(n => {
+                    if (n.id === selected.id) {
+                      const newConfig = { 
+                        ...cfg, 
+                        semanticMatch: { 
+                          enabled: cfg.semanticMatch?.enabled || false,
+                          provider: cfg.semanticMatch?.provider || 'qwen',
+                          model: cfg.semanticMatch?.model || 'qwen-plus',
+                          temperature: cfg.semanticMatch?.temperature || 0.1,
+                          apiKey: cfg.semanticMatch?.apiKey || '',
+                          apiUrl: cfg.semanticMatch?.apiUrl || '',
+                          ...cfg.semanticMatch, 
+                          conditions: [...(cfg.semanticMatch?.conditions || []), { description: '', value: '' }] 
+                        } 
+                      }
+                      return {
+                        ...n, 
+                        data: { 
+                          ...n.data, 
+                          config: newConfig,
+                          conditionHandles: generateConditionHandles(newConfig)
+                        } 
+                      }
+                    }
+                    return n
+                  }))}
+                  style={{ marginBottom: '8px' }}
+                >
+                  + 添加语义条件
+                </button>
+                
+                {(cfg.semanticMatch.conditions || []).map((condition, idx) => (
+                  <div key={idx} style={{ padding: '8px', border: '1px solid #e5e7eb', borderRadius: '6px', marginBottom: '8px' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+                      <strong>条件 {idx + 1}</strong>
+                      <button
+                        onClick={() => setNodes((ns) => ns.map(n => {
+                          if (n.id === selected.id) {
+                            const newConfig = { 
+                              ...cfg, 
+                              semanticMatch: { 
+                                enabled: cfg.semanticMatch?.enabled || false,
+                                provider: cfg.semanticMatch?.provider || 'qwen',
+                                model: cfg.semanticMatch?.model || 'qwen-plus',
+                                temperature: cfg.semanticMatch?.temperature || 0.1,
+                                apiKey: cfg.semanticMatch?.apiKey || '',
+                                apiUrl: cfg.semanticMatch?.apiUrl || '',
+                                ...cfg.semanticMatch, 
+                                conditions: (cfg.semanticMatch?.conditions || []).filter((_, i) => i !== idx) 
+                              } 
+                            }
+                            return {
+                              ...n, 
+                              data: { 
+                                ...n.data, 
+                                config: newConfig,
+                                conditionHandles: generateConditionHandles(newConfig)
+                              } 
+                            }
+                          }
+                          return n
+                        }))}
+                        style={{ border: '1px solid #fecaca', background: '#fff5f5', color: '#b91c1c', borderRadius: '4px', padding: '2px 6px', cursor: 'pointer' }}
+                      >
+                        删除
+                      </button>
+                    </div>
+                    <label>条件描述：
+                      <input 
+                        value={condition.description}
+                        onChange={(e) => setNodes((ns) => ns.map(n => {
+                          if (n.id === selected.id) {
+                            const newConfig = { 
+                              ...cfg, 
+                              semanticMatch: { 
+                                enabled: cfg.semanticMatch?.enabled || false,
+                                provider: cfg.semanticMatch?.provider || 'qwen',
+                                model: cfg.semanticMatch?.model || 'qwen-plus',
+                                temperature: cfg.semanticMatch?.temperature || 0.1,
+                                apiKey: cfg.semanticMatch?.apiKey || '',
+                                apiUrl: cfg.semanticMatch?.apiUrl || '',
+                                ...cfg.semanticMatch, 
+                                conditions: (cfg.semanticMatch?.conditions || []).map((c, i) => 
+                                  i === idx ? { ...c, description: e.target.value } : c
+                                ) 
+                              } 
+                            }
+                            return {
+                              ...n, 
+                              data: { 
+                                ...n.data, 
+                                config: newConfig,
+                                conditionHandles: generateConditionHandles(newConfig)
+                              } 
+                            }
+                          }
+                          return n
+                        }))}
+                        placeholder="例如：查询割接列表"
+                      />
+                    </label>
+                    <label>条件值：
+                      <input 
+                        value={condition.value}
+                        onChange={(e) => setNodes((ns) => ns.map(n => {
+                          if (n.id === selected.id) {
+                            const newConfig = { 
+                              ...cfg, 
+                              semanticMatch: { 
+                                enabled: cfg.semanticMatch?.enabled || false,
+                                provider: cfg.semanticMatch?.provider || 'qwen',
+                                model: cfg.semanticMatch?.model || 'qwen-plus',
+                                temperature: cfg.semanticMatch?.temperature || 0.1,
+                                apiKey: cfg.semanticMatch?.apiKey || '',
+                                apiUrl: cfg.semanticMatch?.apiUrl || '',
+                                ...cfg.semanticMatch, 
+                                conditions: (cfg.semanticMatch?.conditions || []).map((c, i) => 
+                                  i === idx ? { ...c, value: e.target.value } : c
+                                ) 
+                              } 
+                            }
+                            return {
+                              ...n, 
+                              data: { 
+                                ...n.data, 
+                                config: newConfig,
+                                conditionHandles: generateConditionHandles(newConfig)
+                              } 
+                            }
+                          }
+                          return n
+                        }))}
+                        placeholder="例如：list"
+                      />
+                    </label>
+                  </div>
+                ))}
+              </div>
+            )}
+            
+            <div className="panel-subtitle">传统关键词匹配</div>
             <label>IF 变量路径：
               <input value={cfg.if.variable}
-                onChange={(e) => setNodes((ns) => ns.map(n => n.id === selected.id ? { ...n, data: { ...n.data, config: { ...cfg, if: { ...cfg.if, variable: e.target.value } } } } : n))} />
+                onChange={(e) => setNodes((ns) => ns.map(n => {
+                  if (n.id === selected.id) {
+                    const newConfig = { ...cfg, if: { ...cfg.if, variable: e.target.value } }
+                    return {
+                      ...n, 
+                      data: { 
+                        ...n.data, 
+                        config: newConfig,
+                        conditionHandles: generateConditionHandles(newConfig)
+                      } 
+                    }
+                  }
+                  return n
+                }))} />
             </label>
             <label>IF 条件：
               <select value={cfg.if.operator}
-                onChange={(e) => setNodes((ns) => ns.map(n => n.id === selected.id ? { ...n, data: { ...n.data, config: { ...cfg, if: { ...cfg.if, operator: e.target.value as any } } } } : n))}>
+                onChange={(e) => setNodes((ns) => ns.map(n => {
+                  if (n.id === selected.id) {
+                    const newConfig = { ...cfg, if: { ...cfg.if, operator: e.target.value as any } }
+                    return {
+                      ...n, 
+                      data: { 
+                        ...n.data, 
+                        config: newConfig,
+                        conditionHandles: generateConditionHandles(newConfig)
+                      } 
+                    }
+                  }
+                  return n
+                }))}>
                 <option value="contains">包含</option>
                 <option value="not_contains">不包含</option>
                 <option value="start_with">开始是</option>
@@ -1448,33 +2635,92 @@ export default function WorkflowEditor({ workflowId, token, user, onBack, onSave
             {!(cfg.if.operator === 'is_empty' || cfg.if.operator === 'is_not_empty') && (
               <label>IF 值：
                 <input value={cfg.if.value || ''}
-                  onChange={(e) => setNodes((ns) => ns.map(n => n.id === selected.id ? { ...n, data: { ...n.data, config: { ...cfg, if: { ...cfg.if, value: e.target.value } } } } : n))} />
+                  onChange={(e) => setNodes((ns) => ns.map(n => {
+                    if (n.id === selected.id) {
+                      const newConfig = { ...cfg, if: { ...cfg.if, value: e.target.value } }
+                      return {
+                        ...n, 
+                        data: { 
+                          ...n.data, 
+                          config: newConfig,
+                          conditionHandles: generateConditionHandles(newConfig)
+                        } 
+                      }
+                    }
+                    return n
+                  }))} />
               </label>
             )}
             <div className="panel-subtitle">ELIF 条件（可选）</div>
-            <button onClick={() => setNodes((ns) => ns.map(n => n.id === selected.id ? { ...n, data: { ...n.data, config: { ...cfg, elifs: [...cfg.elifs, { variable: 'query', operator: 'contains', value: '' }] } } } : n))}>+ 添加 ELIF</button>
+            <button onClick={() => setNodes((ns) => ns.map(n => {
+              if (n.id === selected.id) {
+                const newConfig = { ...cfg, elifs: [...cfg.elifs, { variable: 'query', operator: 'contains' as const, value: '' }] }
+                return {
+                  ...n, 
+                  data: { 
+                    ...n.data, 
+                    config: newConfig,
+                    conditionHandles: generateConditionHandles(newConfig)
+                  } 
+                }
+              }
+              return n
+            }))}>+ 添加 ELIF</button>
             {cfg.elifs.map((c, idx) => (
               <div key={idx} style={{padding:'40px 8px 8px 8px', border:'1px solid #eee', borderRadius:8, marginTop:8, position:'relative'}}>
                 <button
-                  onClick={() => setNodes((ns) => ns.map(n => n.id === selected.id ? { 
-                    ...n, 
-                    data: { 
-                      ...n.data, 
-                      config: { 
+                  onClick={() => setNodes((ns) => ns.map(n => {
+                    if (n.id === selected.id) {
+                      const newConfig = { 
                         ...cfg, 
                         elifs: cfg.elifs.filter((_, i) => i !== idx) 
-                      } 
-                    } 
-                  } : n))}
+                      }
+                      return {
+                        ...n, 
+                        data: { 
+                          ...n.data, 
+                          config: newConfig,
+                          conditionHandles: generateConditionHandles(newConfig)
+                        } 
+                      }
+                    }
+                    return n
+                  }))}
                   style={{position:'absolute', right:8, top:8, border:'1px solid #fecaca', background:'#fff5f5', color:'#b91c1c', borderRadius:6, padding:'4px 8px', cursor:'pointer', zIndex:1}}
                 >删除</button>
                 <label>变量：
                   <input value={c.variable}
-                    onChange={(e) => setNodes((ns) => ns.map(n => n.id === selected.id ? { ...n, data: { ...n.data, config: { ...cfg, elifs: cfg.elifs.map((it,i)=> i===idx?{...it, variable:e.target.value}:it) } } } : n))} />
+                    onChange={(e) => setNodes((ns) => ns.map(n => {
+                      if (n.id === selected.id) {
+                        const newConfig = { ...cfg, elifs: cfg.elifs.map((it,i)=> i===idx?{...it, variable:e.target.value}:it) }
+                        return {
+                          ...n, 
+                          data: { 
+                            ...n.data, 
+                            config: newConfig,
+                            conditionHandles: generateConditionHandles(newConfig)
+                          } 
+                        }
+                      }
+                      return n
+                    }))} />
                 </label>
                 <label>条件：
                   <select value={c.operator}
-                    onChange={(e) => setNodes((ns) => ns.map(n => n.id === selected.id ? { ...n, data: { ...n.data, config: { ...cfg, elifs: cfg.elifs.map((it,i)=> i===idx?{...it, operator:e.target.value as any}:it) } } } : n))}>
+                    onChange={(e) => setNodes((ns) => ns.map(n => {
+                      if (n.id === selected.id) {
+                        const newConfig = { ...cfg, elifs: cfg.elifs.map((it,i)=> i===idx?{...it, operator:e.target.value as any}:it) }
+                        return {
+                          ...n, 
+                          data: { 
+                            ...n.data, 
+                            config: newConfig,
+                            conditionHandles: generateConditionHandles(newConfig)
+                          } 
+                        }
+                      }
+                      return n
+                    }))}>
                     <option value="contains">包含</option>
                     <option value="not_contains">不包含</option>
                     <option value="start_with">开始是</option>
@@ -1488,20 +2734,46 @@ export default function WorkflowEditor({ workflowId, token, user, onBack, onSave
                 {!(c.operator === 'is_empty' || c.operator === 'is_not_empty') && (
                   <label>值：
                     <input value={c.value || ''}
-                      onChange={(e) => setNodes((ns) => ns.map(n => n.id === selected.id ? { ...n, data: { ...n.data, config: { ...cfg, elifs: cfg.elifs.map((it,i)=> i===idx?{...it, value:e.target.value}:it) } } } : n))} />
+                      onChange={(e) => setNodes((ns) => ns.map(n => {
+                        if (n.id === selected.id) {
+                          const newConfig = { ...cfg, elifs: cfg.elifs.map((it,i)=> i===idx?{...it, value:e.target.value}:it) }
+                          return {
+                            ...n, 
+                            data: { 
+                              ...n.data, 
+                              config: newConfig,
+                              conditionHandles: generateConditionHandles(newConfig)
+                            } 
+                          }
+                        }
+                        return n
+                      }))} />
                   </label>
                 )}
               </div>
             ))}
             <label style={{marginTop:8}}>启用 ELSE：
-              <input type="checkbox" checked={cfg.elseEnabled} onChange={(e) => setNodes((ns) => ns.map(n => n.id === selected.id ? { ...n, data: { ...n.data, config: { ...cfg, elseEnabled: e.target.checked } } } : n))} />
+              <input type="checkbox" checked={cfg.elseEnabled} onChange={(e) => setNodes((ns) => ns.map(n => {
+                if (n.id === selected.id) {
+                  const newConfig = { ...cfg, elseEnabled: e.target.checked }
+                  return {
+                    ...n, 
+                    data: { 
+                      ...n.data, 
+                      config: newConfig,
+                      conditionHandles: generateConditionHandles(newConfig)
+                    } 
+                  }
+                }
+                return n
+              }))} />
             </label>
             <div style={{marginTop:8, fontSize:12, color:'#64748b'}}>当前分支：未执行</div>
           </div>
         )
       }
       if (nodeType === 'kb') {
-        const cfg: KbConfig = selected.data?.config || { topK: 3 }
+        const cfg: KbConfig = selected.data?.config || { topK: 3, source: 'static' }
         return (
           <div className="panel">
             <div className="panel-title">知识检索配置</div>
@@ -1518,12 +2790,74 @@ export default function WorkflowEditor({ workflowId, token, user, onBack, onSave
               fontSize: '12px',
               color: '#6b7280'
             }}>
-              <strong>节点 ID:</strong> {selected.id}
+              <strong>节点 ID:</strong> {selected.id}<br/>
+              <strong>可用变量:</strong> <code style={{backgroundColor: '#e5e7eb', padding: '2px 4px', borderRadius: '2px'}}>{"{{kb_text}}"}</code> (检索结果)
             </div>
+            <label>数据源：
+              <select 
+                value={cfg.source || 'static'}
+                onChange={(e) => setNodes((ns) => ns.map(n => n.id === selected.id ? { ...n, data: { ...n.data, config: { ...cfg, source: e.target.value } } } : n))}
+              >
+                <option value="static">📄 静态向量库（上传的文档）</option>
+                <option value="dynamic">🔄 动态知识库（实时数据）</option>
+              </select>
+            </label>
+            
+            {/* 上传数据按钮 */}
+            {cfg.source === 'static' && (
+              <div style={{ 
+                marginTop: '12px', 
+                padding: '12px', 
+                backgroundColor: '#f0f9ff', 
+                border: '1px solid #0ea5e9', 
+                borderRadius: '8px' 
+              }}>
+                <div style={{ 
+                  fontSize: '14px', 
+                  fontWeight: '500', 
+                  color: '#0369a1', 
+                  marginBottom: '8px' 
+                }}>
+                  📁 文档管理
+                </div>
+                <div style={{ 
+                  fontSize: '12px', 
+                  color: '#64748b', 
+                  marginBottom: '10px' 
+                }}>
+                  上传文档到静态向量库，支持 PDF、Word、TXT 等格式
+                </div>
+                <button
+                  onClick={() => {
+                    // 直接跳转到后端服务器的上传页面
+                    window.location.href = 'http://localhost:5757/upload.html'
+                  }}
+                  style={{
+                    backgroundColor: '#0ea5e9',
+                    color: 'white',
+                    border: 'none',
+                    padding: '8px 16px',
+                    borderRadius: '6px',
+                    cursor: 'pointer',
+                    fontSize: '13px',
+                    fontWeight: '500',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '6px'
+                  }}
+                >
+                  📤 上传文档
+                </button>
+              </div>
+            )}
             <label>TopK：
-              <input type="number" value={cfg.topK}
+              <input type="number" value={cfg.topK} min="1" max="10"
                 onChange={(e) => setNodes((ns) => ns.map(n => n.id === selected.id ? { ...n, data: { ...n.data, config: { ...cfg, topK: Number(e.target.value) } } } : n))} />
             </label>
+            <div style={{marginTop:8, fontSize:12, color:'#64748b'}}>
+              💡 静态向量库：已上传的文档文件<br/>
+              💡 动态知识库：实时更新的业务数据（需启动 Python API）
+            </div>
           </div>
         )
       }
@@ -1766,11 +3100,21 @@ export default function WorkflowEditor({ workflowId, token, user, onBack, onSave
                       })
                     }
                     
+                    // 渲染URL和Body（与runFlow中的逻辑保持一致）
+                    const renderedUrl = renderTemplate(cfg.url, variablesObj)
+                    const renderedBody = cfg.bodyType === 'json' ? 
+                      renderTemplate(cfg.bodyJson, variablesObj) : 
+                      cfg.bodyType === 'text' ? 
+                      renderTemplate(cfg.bodyText, variablesObj) : ''
+                    
+                    // 直接发送渲染后的body
+                    let bodyToSend = renderedBody
+                    
                     const testResult = await api('/api/http-request', {
                       method: cfg.method,
-                      url: cfg.url,
+                      url: renderedUrl,
                       headers: authHeaders,
-                      body: cfg.bodyType === 'json' ? cfg.bodyJson : cfg.bodyType === 'text' ? cfg.bodyText : '',
+                      body: bodyToSend,
                       variables: variablesObj,
                       auth: cfg.auth,
                       advanced: cfg.advanced,
@@ -2089,19 +3433,33 @@ export default function WorkflowEditor({ workflowId, token, user, onBack, onSave
             </div>
 
             <div className="form-group">
-              <label>请求体 (JSON格式)</label>
-              <textarea 
-                value={cfg.bodyType === 'json' ? cfg.bodyJson : cfg.bodyType === 'text' ? cfg.bodyText : ''} 
-                onChange={(e) => {
-                  if (cfg.bodyType === 'json') {
-                    setNodes((ns) => ns.map(n => n.id === selected.id ? { ...n, data: { ...n.data, config: { ...cfg, bodyJson: e.target.value } } } : n))
-                  } else if (cfg.bodyType === 'text') {
-                    setNodes((ns) => ns.map(n => n.id === selected.id ? { ...n, data: { ...n.data, config: { ...cfg, bodyText: e.target.value } } } : n))
-                  }
-                }}
-                placeholder='{"key": "value"}' 
-              />
+              <label>请求体类型</label>
+              <select 
+                value={cfg.bodyType} 
+                onChange={(e) => setNodes((ns) => ns.map(n => n.id === selected.id ? { ...n, data: { ...n.data, config: { ...cfg, bodyType: e.target.value as any } } } : n))}
+              >
+                <option value="none">无请求体</option>
+                <option value="text">文本</option>
+                <option value="json">JSON</option>
+              </select>
             </div>
+
+            {cfg.bodyType !== 'none' && (
+              <div className="form-group">
+                <label>请求体 ({cfg.bodyType === 'json' ? 'JSON格式' : '文本格式'})</label>
+                <textarea 
+                  value={cfg.bodyType === 'json' ? cfg.bodyJson : cfg.bodyText} 
+                  onChange={(e) => {
+                    if (cfg.bodyType === 'json') {
+                      setNodes((ns) => ns.map(n => n.id === selected.id ? { ...n, data: { ...n.data, config: { ...cfg, bodyJson: e.target.value } } } : n))
+                    } else if (cfg.bodyType === 'text') {
+                      setNodes((ns) => ns.map(n => n.id === selected.id ? { ...n, data: { ...n.data, config: { ...cfg, bodyText: e.target.value } } } : n))
+                    }
+                  }}
+                  placeholder={cfg.bodyType === 'json' ? '{"key": "value"}' : '输入文本内容'} 
+                />
+              </div>
+            )}
 
           </div>
         )
@@ -2216,13 +3574,14 @@ export default function WorkflowEditor({ workflowId, token, user, onBack, onSave
                   formData.append('file', file);
                   
                   try {
-                    const response = await fetch('/api/upload-data', {
+                    const response = await fetch('http://localhost:5757/api/upload-data', {
                       method: 'POST',
                       body: formData
                     });
                     
                     if (!response.ok) {
-                      throw new Error('文件上传失败');
+                      const errorText = await response.text();
+                      throw new Error(`文件上传失败: ${errorText}`);
                     }
                     
                     const result = await response.json();
@@ -2440,6 +3799,46 @@ export default function WorkflowEditor({ workflowId, token, user, onBack, onSave
                   {saveStatus === 'error' && '❌ 保存失败'}
                 </div>
               )}
+              {/* 后台任务控制按钮 */}
+              {!isBackgroundRunning ? (
+                <button
+                  onClick={startBackgroundTask}
+                  style={{
+                    background: '#10b981',
+                    color: 'white',
+                    border: 'none',
+                    padding: '6px 12px',
+                    borderRadius: '4px',
+                    cursor: 'pointer',
+                    fontSize: '12px',
+                    marginRight: '8px',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '4px'
+                  }}
+                >
+                  ▶️ 启动后台任务
+                </button>
+              ) : (
+                <button
+                  onClick={stopBackgroundTask}
+                  style={{
+                    background: '#ef4444',
+                    color: 'white',
+                    border: 'none',
+                    padding: '6px 12px',
+                    borderRadius: '4px',
+                    cursor: 'pointer',
+                    fontSize: '12px',
+                    marginRight: '8px',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '4px'
+                  }}
+                >
+                  ⏹️ 停止后台任务
+                </button>
+              )}
               <button
                 onClick={async () => {
                   // 在返回前自动保存工作流
@@ -2483,6 +3882,11 @@ export default function WorkflowEditor({ workflowId, token, user, onBack, onSave
                 <button onClick={() => createNewNode('http')}>🌐 HTTP请求</button>
                 <button onClick={() => createNewNode('analysis')}>📊 数据分析</button>
                 <button onClick={() => createNewNode('reply')}>🟠 直接回复</button>
+                <div style={{borderTop:'1px solid #e5e7eb', margin:'4px 0'}}></div>
+                <button onClick={() => createNewNode('query')}>🎯 Query触发器</button>
+                <button onClick={() => createNewNode('loop')}>⏱️ 循环定时器</button>
+                <button onClick={() => createNewNode('start_chat')}>💬 开始（聊天）</button>
+                <button onClick={() => createNewNode('start_background')}>⚙️ 开始（后台）</button>
               </div>
             )}
             <button 
@@ -2565,8 +3969,7 @@ export default function WorkflowEditor({ workflowId, token, user, onBack, onSave
           <button 
             onClick={() => {
               if (chatHistory.length > 0 && confirm('确定要清除所有聊天记录吗？')) {
-                setChatHistory([])
-                saveChatHistory([])
+                clearChatHistory();
               }
             }}
             disabled={chatHistory.length === 0}
