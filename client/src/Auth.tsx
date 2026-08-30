@@ -110,10 +110,10 @@ export default function Auth({ onLogin }: AuthProps) {
             fontSize: '28px',
             fontWeight: 'bold'
           }}>
-            AI-Flow
+            NexusFlow Assistant Studio
           </h1>
           <p style={{ color: '#666', fontSize: '16px' }}>
-            {isLogin ? '欢迎回来' : '创建新账户'}
+            {isLogin ? 'Welcome back' : 'Create a workspace account'}
           </p>
         </div>
 

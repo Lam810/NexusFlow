@@ -34,8 +34,8 @@ const QWEN_BASE_URL = 'https://dashscope.aliyuncs.com/compatible-mode/v1';
 const QWEN_API_KEY = process.env.QWEN_API_KEY;
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY;
-const LOCAL_MODEL_URL = process.env.LOCAL_MODEL_URL || 'http://192.168.137.37:8000/v1/chat/completions';
-const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key-change-in-production';
+const LOCAL_MODEL_URL = process.env.LOCAL_MODEL_URL || 'http://localhost:8000/v1/chat/completions';
+const JWT_SECRET = process.env.JWT_SECRET || 'replace-with-a-local-development-secret';
 
 // 动态知识库配置
 const KNOWLEDGE_API_URL = process.env.KNOWLEDGE_API_URL || 'http://localhost:5000';

@@ -2891,7 +2891,7 @@ export default function WorkflowEditor({ workflowId, token, user, onBack, onSave
                 } else if (provider === 'openai') {
                   suggestedUrl = 'https://api.openai.com/v1'
                 } else if (provider === 'local') {
-                  suggestedUrl = serverConfig?.localModelUrl || 'http://192.168.137.37:8000/v1/chat/completions'
+                  suggestedUrl = serverConfig?.localModelUrl || 'http://localhost:8000/v1/chat/completions'
                 } else if (provider === 'openrouter') {
                   suggestedUrl = 'https://openrouter.ai/api/v1'
                 }

@@ -198,14 +198,14 @@ export default function WorkflowDashboard({ token, onEditWorkflow, onLogout, use
               WebkitBackgroundClip: 'text',
               WebkitTextFillColor: 'transparent'
             }}>
-              AI-Flow 工作流管理
+              NexusFlow Assistant Studio
             </h1>
             <p style={{
               margin: '0',
               color: '#666',
               fontSize: '16px'
             }}>
-              欢迎回来, {user?.username}！管理您的AI工作流
+              Welcome back, {user?.username}. Build and manage assistant workflows for AI PC and device-side scenarios.
             </p>
           </div>
           
