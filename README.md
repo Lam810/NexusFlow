@@ -1,4 +1,16 @@
+<div align="center">
+
 # NexusFlow
+
+**A visual workflow studio for assistant-style AI pipelines.**
+Drag-and-drop intent routing, retrieval, tool calls, and model orchestration — prototyped for AI PC / HarmonyOS-style assistants.
+
+[![License: MIT](https://img.shields.io/badge/License-MIT-informational.svg)](LICENSE)
+[![TypeScript](https://img.shields.io/badge/TypeScript-React%20%2B%20Node-3178c6.svg)](client/package.json)
+
+</div>
+
+---
 
 NexusFlow is a visual workflow studio for building assistant-style AI pipelines. It was refactored as a public, desensitized prototype for demonstrating how an AI PC or HarmonyOS-style assistant can connect user intent, local knowledge, model inference, tool calls, and structured responses.
 
