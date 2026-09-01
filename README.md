@@ -10,6 +10,7 @@ Drag-and-drop intent routing, retrieval, tool calls, and model orchestration —
 [![TypeScript](https://img.shields.io/badge/TypeScript-React%20%2B%20Node-3178c6.svg)](client/package.json)
 [![Status](https://img.shields.io/badge/status-developer%20prototype-f2a65a.svg)](#prototype-status)
 [![Live Demo](https://img.shields.io/badge/live%20demo-Vercel-00c7c7.svg)](https://nexusflow-rose.vercel.app)
+[![Product Site](https://img.shields.io/badge/product%20site-GitHub%20Pages-ff8a4c.svg)](https://wwwwwkkkkkk7777.github.io/nexusflow/)
 
 </div>
 
@@ -24,7 +25,7 @@ The project is not an official HarmonyOS application and does not include propri
 
 ## Prototype Status
 
-The hosted build is available at [nexusflow-rose.vercel.app](https://nexusflow-rose.vercel.app). Public registration may be disabled; the deployment is a reference environment rather than a shared hosted service.
+Explore the [NexusFlow product site](https://wwwwwkkkkkk7777.github.io/nexusflow/) or open the hosted build at [nexusflow-rose.vercel.app](https://nexusflow-rose.vercel.app). Public registration may be disabled; the deployment is a reference environment rather than a shared hosted service.
 
 | Area | Current prototype scope |
 | --- | --- |
