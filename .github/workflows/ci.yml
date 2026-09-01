@@ -1,0 +1,59 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            server/package-lock.json
+            client/package-lock.json
+
+      - name: Install server dependencies
+        run: npm ci --prefix server
+
+      - name: Install client dependencies
+        run: npm ci --prefix client
+
+      - name: Check server syntax
+        run: npm run check --prefix server && node --check api/index.js
+
+      - name: Test server
+        run: npm test --prefix server
+
+      - name: Check Local Runtime
+        run: npm run check --prefix runtime
+
+      - name: Test Local Runtime
+        run: npm test --prefix runtime
+
+      - name: Check client types
+        run: npm run typecheck --prefix client
+
+      - name: Lint client
+        run: npm run lint --prefix client
+
+      - name: Build Vercel static output
+        run: npm run build:vercel && test -f public/index.html
+
+      - name: Audit dependencies
+        run: |
+          npm audit --prefix server
+          npm audit --prefix client

@@ -1,9 +1,29 @@
 import fs from 'fs';
 import path from 'path';
 import mammoth from 'mammoth';
-import { PDFParse } from 'pdf-parse';
-import XLSX from 'xlsx';
+import ExcelJS from 'exceljs';
 import csv from 'csv-parser';
+
+let pdfParserModulePromise;
+
+async function loadPdfParserModule() {
+  if (!pdfParserModulePromise) {
+    pdfParserModulePromise = (async () => {
+      // pdfjs expects these browser geometry APIs even for text-only parsing.
+      // Load the native Node polyfills lazily so unrelated serverless routes do
+      // not initialize the relatively heavy PDF runtime during cold starts.
+      const canvasModule = await import('@napi-rs/canvas');
+      const canvas = canvasModule.default || canvasModule;
+      globalThis.DOMMatrix ||= canvas.DOMMatrix;
+      globalThis.ImageData ||= canvas.ImageData;
+      globalThis.Path2D ||= canvas.Path2D;
+
+      return import('pdf-parse');
+    })();
+  }
+
+  return pdfParserModulePromise;
+}
 
 class FileParser {
   constructor() {
@@ -11,10 +31,8 @@ class FileParser {
       '.txt': this.parseText,
       '.md': this.parseText,
       '.docx': this.parseDocx,
-      '.doc': this.parseDocx,
       '.pdf': this.parsePdf,
       '.xlsx': this.parseExcel,
-      '.xls': this.parseExcel,
       '.csv': this.parseCsv,
       '.json': this.parseJson,
       '.xml': this.parseXml,
@@ -92,33 +110,54 @@ class FileParser {
 
   // 解析PDF文件
   async parsePdf(filePath, options = {}) {
+    const { PDFParse } = await loadPdfParserModule();
     const buffer = fs.readFileSync(filePath);
-    const uint8Array = new Uint8Array(buffer);
-    const pdfParse = new PDFParse(uint8Array);
-    await pdfParse.load();
-    const text = pdfParse.getText();
-    
-    return {
-      content: String(text || ''), // 确保content是字符串
-      metadata: {
-        pages: pdfParse.doc ? pdfParse.doc.numPages : 0,
-        info: pdfParse.getInfo ? pdfParse.getInfo() : {},
-        size: buffer.length
-      }
-    };
+    const parser = new PDFParse({ data: new Uint8Array(buffer) });
+    try {
+      const [textResult, infoResult] = await Promise.all([
+        parser.getText(),
+        parser.getInfo().catch(() => null),
+      ]);
+      return {
+        content: String(textResult?.text || ''),
+        metadata: {
+          pages: textResult?.total || textResult?.pages?.length || 0,
+          info: infoResult?.info || null,
+          size: buffer.length
+        }
+      };
+    } finally {
+      await parser.destroy();
+    }
   }
 
   // 解析Excel文件
-  parseExcel(filePath, options = {}) {
-    const workbook = XLSX.readFile(filePath);
+  async parseExcel(filePath, options = {}) {
+    const workbook = new ExcelJS.Workbook();
+    await workbook.xlsx.readFile(filePath);
     const sheets = [];
-    
-    workbook.SheetNames.forEach(sheetName => {
-      const worksheet = workbook.Sheets[sheetName];
-      const jsonData = XLSX.utils.sheet_to_json(worksheet, { header: 1 });
+
+    const normalizeCell = value => {
+      if (value === null || value === undefined) return '';
+      if (value instanceof Date) return value.toISOString();
+      if (typeof value === 'object') {
+        if ('text' in value) return String(value.text);
+        if ('result' in value) return String(value.result ?? '');
+        if ('richText' in value) return value.richText.map(item => item.text).join('');
+        return JSON.stringify(value);
+      }
+      return String(value);
+    };
+
+    workbook.eachSheet(worksheet => {
+      const jsonData = [];
+      worksheet.eachRow({ includeEmpty: false }, row => {
+        const values = row.values.slice(1).map(normalizeCell);
+        jsonData.push(values);
+      });
       
       // 将Excel数据转换为文本
-      let sheetText = `工作表: ${sheetName}\n`;
+      let sheetText = `工作表: ${worksheet.name}\n`;
       if (jsonData.length > 0) {
         // 添加表头
         if (jsonData[0] && jsonData[0].length > 0) {
@@ -134,7 +173,7 @@ class FileParser {
       }
       
       sheets.push({
-        name: sheetName,
+        name: worksheet.name,
         content: sheetText,
         rowCount: jsonData.length,
         columnCount: jsonData.length > 0 ? jsonData[0].length : 0

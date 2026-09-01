@@ -7,41 +7,44 @@ import WorkflowEditor from './WorkflowEditor'
 export default function App() {
   // 认证状态
   const [user, setUser] = useState(null)
-  const [token, setToken] = useState(null)
+  const [token] = useState('')
   const [showAuth, setShowAuth] = useState(true)
+  const [checkingSession, setCheckingSession] = useState(true)
   
   // 视图状态
   const [currentView, setCurrentView] = useState('dashboard') // 'dashboard' | 'editor'
   const [currentWorkflowId, setCurrentWorkflowId] = useState(null)
 
-  // 检查本地存储的认证信息
+  // 通过HttpOnly会话Cookie恢复登录状态
   useEffect(() => {
-    const savedToken = localStorage.getItem('token')
-    const savedUser = localStorage.getItem('user')
-    
-    if (savedToken && savedUser) {
-      setToken(savedToken)
-      setUser(JSON.parse(savedUser))
-      setShowAuth(false)
-    }
+    localStorage.removeItem('token')
+    localStorage.removeItem('user')
+    fetch('/api/auth/me', { credentials: 'same-origin', cache: 'no-store' })
+      .then(async response => {
+        if (!response.ok) return
+        const data = await response.json()
+        setUser(data.user)
+        setShowAuth(false)
+      })
+      .catch(() => {})
+      .finally(() => setCheckingSession(false))
   }, [])
 
   // 登录处理
-  const handleLogin = (userData: any, userToken: string) => {
+  const handleLogin = (userData: any) => {
     setUser(userData)
-    setToken(userToken)
     setShowAuth(false)
     setCurrentView('dashboard')
   }
 
   // 登出处理
-  const handleLogout = () => {
+  const handleLogout = async () => {
+    try {
+      await fetch('/api/auth/logout', { method: 'POST', credentials: 'same-origin' })
+    } catch {}
     setUser(null)
-    setToken(null)
     setShowAuth(true)
     setCurrentView('dashboard')
-    localStorage.removeItem('token')
-    localStorage.removeItem('user')
   }
 
   // 编辑工作流
@@ -57,25 +60,12 @@ export default function App() {
   }
 
   // 保存工作流
-  const handleSaveWorkflow = async (workflowId: string, name: string, nodes: any[], edges: any[]) => {
-    try {
-      const response = await fetch(`/api/workflows/${workflowId}`, {
-        method: 'PUT',
-        headers: {
-          'Authorization': `Bearer ${token}`,
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({ name, nodes, edges })
-      })
+  const handleSaveWorkflow = (workflowId: string, name: string) => {
+    console.log('工作流已保存:', workflowId, name)
+  }
 
-      if (!response.ok) {
-        throw new Error('保存工作流失败')
-      }
-
-      console.log('工作流已保存:', name)
-    } catch (error) {
-      console.error('保存工作流失败:', error)
-    }
+  if (checkingSession) {
+    return <div className="session-loading">正在检查登录状态…</div>
   }
 
   // 如果未认证，显示登录界面

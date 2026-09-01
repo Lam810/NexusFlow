@@ -9,14 +9,20 @@ import ReactFlow, {
   useNodesState,
   Handle,
   Position,
-  NodeTypes,
-  Controls,
-  MiniMap
+  Controls
 } from 'reactflow';
 import 'reactflow/dist/style.css';
 import './styles.css';
-// @ts-ignore
-import * as echarts from 'echarts';
+
+const ChartWidget = React.lazy(() => import('./ChartWidget'));
+
+function LazyChartWidget(props: { headers: string[]; rows: Array<Record<string, string>> }) {
+  return (
+    <React.Suspense fallback={<div className="chart-widget">图表加载中…</div>}>
+      <ChartWidget {...props} />
+    </React.Suspense>
+  )
+}
 
 // 类型定义
 type KnowledgeMatch = { id: string; text: string; score?: number; similarity?: number }
@@ -66,11 +72,12 @@ type HttpConfig = {
     }
     // OAuth2
     oauth2?: {
-      clientId: string
-      clientSecret: string
-      tokenUrl: string
+      accessToken?: string
+      clientId?: string
+      clientSecret?: string
+      tokenUrl?: string
       scope?: string
-      grantType: 'client_credentials' | 'authorization_code' | 'password'
+      grantType?: 'client_credentials' | 'authorization_code' | 'password'
     }
     // 自定义认证
     customAuth?: {
@@ -153,7 +160,6 @@ function CardNode({ data, id }: any) {
     const spacing = 8 // 出口间距
     const totalHeight = baseHeight + (conditionHandles.length * handleHeight) + ((conditionHandles.length - 1) * spacing)
     const finalHeight = Math.max(totalHeight, 80) // 最小高度80px
-    console.log(`条件分支节点 ${id}: ${conditionHandles.length}个出口, 计算高度: ${finalHeight}px`)
     return `${finalHeight}px`
   }
   
@@ -324,14 +330,14 @@ const initialEdges: Edge[] = [
 ]
 
 // API 函数
-async function api(path: string, body?: any) {
+async function api(path: string, body: any, authToken: string) {
   const serializedBody = body ? JSON.stringify(body) : undefined
-  if (path === '/api/http-request' && serializedBody) {
-    console.log('🌐 发送到后端的完整请求体:', serializedBody.substring(0, 500))
-  }
   const r = await fetch(path, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: {
+      'Authorization': `Bearer ${authToken}`,
+      'Content-Type': 'application/json'
+    },
     body: serializedBody,
   })
   if (!r.ok) throw new Error(await r.text())
@@ -339,8 +345,15 @@ async function api(path: string, body?: any) {
 }
 
 // SSE stream helper
-async function sseStream(path: string, body: any, onChunk: (text: string) => void): Promise<void> {
-  const r = await fetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+async function sseStream(path: string, body: any, authToken: string, onChunk: (text: string) => void): Promise<void> {
+  const r = await fetch(path, {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${authToken}`,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify(body)
+  })
   if (!r.ok || !r.body) throw new Error(await r.text())
   const reader = (r.body as any).getReader?.()
   if (!reader) return
@@ -366,49 +379,59 @@ async function sseStream(path: string, body: any, onChunk: (text: string) => voi
   }
 }
 
-// 渲染模板
+function resolveTemplateValue(path: string, variables: Record<string, any>) {
+  const normalizedPath = path.trim()
+  if (Object.prototype.hasOwnProperty.call(variables, normalizedPath)) {
+    return { found: true, value: variables[normalizedPath] }
+  }
+
+  let value: any = variables
+  for (const key of normalizedPath.split('.')) {
+    if (value === null || value === undefined || !Object.prototype.hasOwnProperty.call(Object(value), key)) {
+      return { found: false, value: undefined }
+    }
+    value = value[key]
+  }
+  return { found: true, value }
+}
+type DeviceConfig = {
+  action: 'system.info' | 'file.read' | 'file.write' | 'app.invoke'
+  path: string
+  content: string
+  adapterId: string
+  adapterAction: string
+  adapterInput: string
+}
+
+// 普通模板用于提示词、URL和鉴权值，不注入JSON转义符。
 function renderTemplate(template: string, variables: Record<string, any>): string {
   return template.replace(/\{\{([^}]+)\}\}/g, (match, path) => {
-    // 支持带下划线的变量名，如 llm_text_节点ID
-    let value
-    if (path in variables) {
-      value = variables[path]
-    } else {
-      // 支持点号分隔的嵌套属性，如 user.name
-      const keys = path.split('.')
-      value = variables
-      for (const key of keys) {
-        value = value?.[key]
-        if (value === undefined) {
-          // 如果变量不存在，保持原样（不渲染为变量）
-          return match
-        }
-      }
-    }
-    
-    // 将值转换为字符串
-    const stringValue = String(value || '')
-    
-    // 检查是否在JSON字符串中（简单检查：前面是否有引号）
-    // 如果是，需要转义特殊字符
-    const escapeForJSON = (str: string) => {
-      return str
-        .replace(/\\/g, '\\\\')  // 反斜杠
-        .replace(/"/g, '\\"')    // 双引号
-        .replace(/\n/g, '\\n')   // 换行符
-        .replace(/\r/g, '\\r')   // 回车符
-        .replace(/\t/g, '\\t')   // 制表符
-        .replace(/\f/g, '\\f')   // 换页符
-        .replace(/\b/g, '\\b')   // 退格符
-    }
-    
-    return escapeForJSON(stringValue)
+    const resolved = resolveTemplateValue(path, variables)
+    return resolved.found ? String(resolved.value ?? '') : match
+  })
+}
+
+// JSON文本中的字符串占位符需要单独转义，避免引号或换行破坏JSON。
+function renderJsonTemplate(template: string, variables: Record<string, any>): string {
+  return template.replace(/\{\{([^}]+)\}\}/g, (match, path) => {
+    const resolved = resolveTemplateValue(path, variables)
+    if (!resolved.found) return match
+    return JSON.stringify(String(resolved.value ?? '')).slice(1, -1)
   })
 }
 
 // Markdown 渲染
+function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;')
+}
+
 function renderMarkdownToHtml(md: string): string {
-  return md
+  return escapeHtml(md)
     .replace(/^# (.*$)/gim, '<h1>$1</h1>')
     .replace(/^## (.*$)/gim, '<h2>$1</h2>')
     .replace(/^### (.*$)/gim, '<h3>$1</h3>')
@@ -447,159 +470,6 @@ function parseMarkdownTable(md: string): { headers: string[]; rows: Array<Record
   }
   if (headerCells.length === 0 || rows.length === 0) return null
   return { headers: headerCells, rows }
-}
-
-// 动态加载 ECharts
-let echartsLoadingPromise: Promise<any> | null = null
-function loadEcharts(): Promise<any> {
-  if ((window as any).echarts) return Promise.resolve((window as any).echarts)
-  if (echartsLoadingPromise) return echartsLoadingPromise
-  echartsLoadingPromise = new Promise((resolve, reject) => {
-    const script = document.createElement('script')
-    script.src = 'https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js'
-    script.async = true
-    script.onload = () => resolve((window as any).echarts)
-    script.onerror = (e) => reject(e)
-    document.head.appendChild(script)
-  })
-  return echartsLoadingPromise
-}
-
-// 图表组件
-function ChartWidget({ headers, rows }: { headers: string[]; rows: Array<Record<string, string>> }) {
-  const [type, setType] = React.useState('bar' as any)
-  const chartRef = React.useRef(null as any)
-  const chartInstanceRef = React.useRef(null as any)
-
-  React.useEffect(() => {
-    let disposed = false
-    async function render() {
-      const echarts = await loadEcharts()
-      if (!chartRef.current || disposed) return
-      const inst = echarts.init(chartRef.current)
-      chartInstanceRef.current = inst
-      const xKey = headers[0]
-      const yKey = headers[1]
-      const x = rows.map(r => r[xKey])
-      const y = rows.map(r => Number(String(r[yKey]).replace(/[^\d.-]/g, '')))
-      if (type === 'pie') {
-        inst.setOption({
-          tooltip: { trigger: 'item' },
-          legend: { bottom: 0 },
-          series: [{
-            type: 'pie',
-            radius: ['35%', '70%'],
-            center: ['50%', '45%'],
-            data: x.map((name, i) => ({ name, value: y[i] })),
-            itemStyle: { borderColor: '#fff', borderWidth: 2 }
-          }],
-        })
-      } else {
-        inst.setOption({
-          grid: { left: 30, right: 10, top: 20, bottom: 30 },
-          tooltip: { trigger: 'axis' },
-          xAxis: { type: 'category', data: x },
-          yAxis: { type: 'value' },
-          series: [{ type: type === 'line' ? 'line' : 'bar', data: y, itemStyle: { color: '#8b5cf6' } }],
-        })
-      }
-      const handle = () => inst.resize()
-      window.addEventListener('resize', handle)
-      return () => {
-        window.removeEventListener('resize', handle)
-        inst.dispose()
-      }
-    }
-    const cleanupPromise = render()
-    return () => { disposed = true; Promise.resolve(cleanupPromise).catch(() => {}) }
-  }, [type, headers, rows])
-
-  const exportChart = (format: 'png' | 'jpg' | 'svg') => {
-    if (!chartInstanceRef.current) return
-    
-    const url = chartInstanceRef.current.getDataURL({
-      type: format,
-      pixelRatio: 2,
-      backgroundColor: '#fff'
-    })
-    
-    const link = document.createElement('a')
-    link.download = `chart_${new Date().toISOString().slice(0, 10)}.${format}`
-    link.href = url
-    document.body.appendChild(link)
-    link.click()
-    document.body.removeChild(link)
-  }
-
-  return (
-    <div className="chart-widget">
-      <div className="chart-table">
-        <table>
-          <thead>
-            <tr>{headers.map(h => <th key={h}>{h}</th>)}</tr>
-          </thead>
-          <tbody>
-            {rows.map((r, i) => (
-              <tr key={i}>{headers.map(h => <td key={h}>{r[h]}</td>)}</tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-      <div className="chart-toolbar">
-        <select value={type} onChange={(e) => setType(e.target.value as any)}>
-          <option value="bar">柱状图</option>
-          <option value="line">折线图</option>
-          <option value="pie">饼图</option>
-        </select>
-        
-        <div style={{ marginLeft: '12px', display: 'flex', gap: '4px' }}>
-          <button 
-            onClick={() => exportChart('png')}
-            style={{ 
-              padding: '4px 8px', 
-              fontSize: '12px', 
-              backgroundColor: '#10b981', 
-              color: 'white', 
-              border: 'none', 
-              borderRadius: '4px', 
-              cursor: 'pointer' 
-            }}
-          >
-            PNG
-          </button>
-          <button 
-            onClick={() => exportChart('jpg')}
-            style={{ 
-              padding: '4px 8px', 
-              fontSize: '12px', 
-              backgroundColor: '#3b82f6', 
-              color: 'white', 
-              border: 'none', 
-              borderRadius: '4px', 
-              cursor: 'pointer' 
-            }}
-          >
-            JPG
-          </button>
-          <button 
-            onClick={() => exportChart('svg')}
-            style={{ 
-              padding: '4px 8px', 
-              fontSize: '12px', 
-              backgroundColor: '#8b5cf6', 
-              color: 'white', 
-              border: 'none', 
-              borderRadius: '4px', 
-              cursor: 'pointer' 
-            }}
-          >
-            SVG
-          </button>
-        </div>
-      </div>
-      <div ref={chartRef} style={{ width: '100%', height: 300, marginTop: 6 }} />
-    </div>
-  )
 }
 
 // 解析完整的分析结果
@@ -661,7 +531,7 @@ function AnalysisResult({ content }: { content: string }) {
           />
         </div>
       )}
-      {table && <ChartWidget headers={table.headers} rows={table.rows} />}
+      {table && <LazyChartWidget headers={table.headers} rows={table.rows} />}
     </div>
   )
 }
@@ -673,6 +543,7 @@ async function runFlow(
   edges: Edge[],
   serverConfig: any,
   workflowId: string,
+  authToken: string,
   onStatus?: (nodeId: string, status: 'running' | 'done') => void,
   onOutput?: (nodeId: string, output: string) => void,
   options?: { isBackgroundMode?: boolean, loopConfig?: LoopConfig, shouldStop?: () => boolean }
@@ -689,8 +560,6 @@ async function runFlow(
 
   // 检查是否为后台模式
   const isBackgroundMode = options?.isBackgroundMode || false
-  const loopConfig = options?.loopConfig
-  const shouldStop = options?.shouldStop || (() => false)
 
   // 如果是后台模式，不输出到聊天框
   const safeOnOutput = isBackgroundMode ? undefined : onOutput
@@ -746,7 +615,7 @@ async function runFlow(
           temperature: cfg.semanticMatch.temperature,
           apiKey: cfg.semanticMatch.apiKey,
           apiUrl: cfg.semanticMatch.apiUrl
-        })
+        }, authToken)
         
         if (response.success && response.matchedIndex > 0) {
           // 返回具体匹配的条件索引
@@ -786,11 +655,9 @@ async function runFlow(
 
     if (nodeType === '开始' || nodeType === '开始（聊天）' || nodeType === '开始（后台）') {
       // 开始节点不需要执行，只是设置模式
-      const cfg = (node.data?.config || { mode: 'chat' }) as StartConfig
       // 模式信息已在外层设置
     } else if (nodeType === 'Query触发器') {
       // Query触发器节点，只有当有query时才继续执行
-      const cfg = (node.data?.config || { enabled: true }) as QueryTriggerConfig
       if (!ctx.query || !ctx.query.trim()) {
         // 如果没有query，停止执行后续节点
         if (safeOnOutput) safeOnOutput(nodeId, '⏸️ 等待Query输入...')
@@ -801,6 +668,9 @@ async function runFlow(
       const cfg = (node.data?.config || { enabled: true, interval: 60, maxIterations: 0 }) as LoopConfig
       // 循环定时器节点不在这里执行，而是在外层控制
       if (safeOnOutput) safeOnOutput(nodeId, `⏱️ 循环定时器：间隔${cfg.interval}秒${cfg.maxIterations ? `，最多${cfg.maxIterations}次` : '，无限循环'}`)
+    } else if (nodeType === '设备能力') {
+      if (safeOnOutput) safeOnOutput(nodeId, '此节点只能通过 Dashboard 的“本机运行”交给 Local Runtime 执行。')
+      throw new Error('DEVICE_RUNTIME_REQUIRED')
     } else if (nodeType === '条件分支') {
       const branch = await executeConditionalNode(nodeId)
       ctx.variables.condition = { branch }
@@ -815,7 +685,7 @@ async function runFlow(
           const response = await api('/api/knowledge/search', { 
             query: ctx.query, 
             top_k: cfg.topK 
-          })
+          }, authToken)
           matches = {
             matches: (response.results || []).map((r: any) => ({
               text: r.content || r.text,
@@ -828,7 +698,7 @@ async function runFlow(
           matches = await api('/api/vector/search', { 
             query: ctx.query, 
             topK: cfg.topK 
-          })
+          }, authToken)
         }
         
         ctx.variables.kb_text = matches.matches.map((m: any) => m.text).join('\n\n')
@@ -855,7 +725,7 @@ async function runFlow(
           query: ctx.query,
           workflowId: workflowId,
           topK: 3
-        })
+        }, authToken)
         
         console.log('🔍 搜索聊天历史结果:', searchResponse)
         
@@ -890,7 +760,7 @@ async function runFlow(
           apiUrl: cfg.apiUrl,
           provider: cfg.provider || 'qwen',
           workflowId: workflowId
-        }, (chunk) => {
+        }, authToken, (chunk) => {
           text += chunk
           if (safeOnOutput) safeOnOutput(nodeId, text)
         })
@@ -914,7 +784,7 @@ async function runFlow(
           bearerToken: '',
           apiKey: { key: '', value: '', location: 'header' },
           basicAuth: { username: '', password: '' },
-          oauth2: { clientId: '', clientSecret: '', tokenUrl: '', scope: '', grantType: 'client_credentials' },
+          oauth2: { accessToken: '', clientId: '', clientSecret: '', tokenUrl: '', scope: '', grantType: 'client_credentials' },
           customAuth: { headers: [], queryParams: [], bodyParams: [] }
         },
         advanced: {
@@ -945,7 +815,7 @@ async function runFlow(
           cfg.headers.map(h => [h.key, renderTemplate(h.value, ctx.variables)])
         )
         const renderedBody = cfg.bodyType === 'json' ? 
-          renderTemplate(cfg.bodyJson, ctx.variables) : 
+          renderJsonTemplate(cfg.bodyJson, ctx.variables) :
           renderTemplate(cfg.bodyText, ctx.variables)
         
         // 处理认证信息
@@ -994,16 +864,16 @@ async function runFlow(
         }
         
         // 处理OAuth2认证（直接使用提供的token）
-        if (cfg.auth.type === 'oauth2' && cfg.auth.oauth2?.clientId) {
-          const token = renderTemplate(cfg.auth.oauth2.clientId, ctx.variables)
-          authHeaders['Authorization'] = `Bearer ${token}`
+        if (cfg.auth.type === 'oauth2' && cfg.auth.oauth2?.accessToken) {
+          const accessToken = renderTemplate(cfg.auth.oauth2.accessToken, ctx.variables)
+          authHeaders['Authorization'] = `Bearer ${accessToken}`
         }
         
         // 将variables数组转换为对象
         const variablesObj = cfg.variables.reduce((acc, v) => ({ ...acc, [v.key]: v.value }), {})
         
         // 对于JSON类型的body，直接发送字符串，让后端的/api/http-request处理
-        let bodyToSend = renderedBody
+        const bodyToSend = renderedBody
         
         const result = await api('/api/http-request', {
           method: cfg.method,
@@ -1015,7 +885,7 @@ async function runFlow(
           advanced: cfg.advanced,
           authQueryParams,
           authBodyParams
-        })
+        }, authToken)
         
         ctx.variables.http_data = result.json || result.content
         ctx.variables.http_text = result.content
@@ -1056,7 +926,7 @@ async function runFlow(
             provider: cfg.provider,
             model: cfg.model,
             temperature: cfg.temperature
-          }, (chunk) => {
+          }, authToken, (chunk) => {
             text += chunk
             if (safeOnOutput) safeOnOutput(nodeId, text)
           })
@@ -1074,7 +944,7 @@ async function runFlow(
             provider: cfg.provider,
             model: cfg.model,
             temperature: cfg.temperature
-          }, (chunk) => {
+          }, authToken, (chunk) => {
             text += chunk
             if (safeOnOutput) safeOnOutput(nodeId, text)
           })
@@ -1214,6 +1084,7 @@ async function runFlowLoop(
   edges: Edge[],
   serverConfig: any,
   workflowId: string,
+  authToken: string,
   onStatus?: (nodeId: string, status: 'running' | 'done') => void,
   onOutput?: (nodeId: string, output: string) => void,
   onLog?: (message: string) => void,
@@ -1245,7 +1116,7 @@ async function runFlowLoop(
   if (!loopConfig.enabled) {
     if (onLog) onLog('ℹ️ 循环定时器未启用，执行一次后退出')
     // 不循环，执行一次
-    await runFlow(query, nodes, edges, serverConfig, workflowId, onStatus, onOutput, { 
+    await runFlow(query, nodes, edges, serverConfig, workflowId, authToken, onStatus, onOutput, {
       isBackgroundMode: true, 
       shouldStop: stopSignal 
     })
@@ -1277,7 +1148,7 @@ async function runFlowLoop(
     if (onLog) onLog(`🔄 [${timestamp}] 开始第${iteration}次执行...`)
     
     try {
-      await runFlow(query, nodes, edges, serverConfig, workflowId, onStatus, onOutput, { 
+      await runFlow(query, nodes, edges, serverConfig, workflowId, authToken, onStatus, onOutput, {
         isBackgroundMode: true, 
         loopConfig,
         shouldStop: stopSignal 
@@ -1338,13 +1209,10 @@ export default function WorkflowEditor({ workflowId, token, user, onBack, onSave
   );
   const onConnect = useCallback((connection: Connection) => setEdges((eds) => addEdge(connection, eds)), []);
   const [question, setQuestion] = useState('什么是混合检索?');
-  const [answer, setAnswer] = useState('');
   const [loading, setLoading] = useState(false);
   const [chatHistory, setChatHistory] = useState([]);
   const [selectedNodeId, setSelectedNodeId] = useState(null);
   const [selectedEdgeId, setSelectedEdgeId] = useState(null);
-  const [activeTab, setActiveTab] = useState('input');
-  const [collapsed, setCollapsed] = useState(false);
   const [previewOpen, setPreviewOpen] = useState(true);
   const [configOpen, setConfigOpen] = useState(false);
   const [showNewNodeMenu, setShowNewNodeMenu] = useState(false);
@@ -1359,11 +1227,13 @@ export default function WorkflowEditor({ workflowId, token, user, onBack, onSave
 
   // 加载服务器配置
   React.useEffect(() => {
-    fetch('/api/config')
+    fetch('/api/config', {
+      headers: { 'Authorization': `Bearer ${token}` }
+    })
       .then(res => res.json())
       .then(config => setServerConfig(config))
       .catch(err => console.error('Failed to load server config:', err))
-  }, []);
+  }, [token]);
 
   // 确保开始节点始终有正确的配置
   React.useEffect(() => {
@@ -1465,7 +1335,10 @@ export default function WorkflowEditor({ workflowId, token, user, onBack, onSave
     try {
       const response = await fetch('/api/chat/add-context', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json'
+        },
         body: JSON.stringify({
           workflowId: workflowId,
           question: question,
@@ -1491,7 +1364,10 @@ export default function WorkflowEditor({ workflowId, token, user, onBack, onSave
       // 清除知识库中的聊天记录
       const response = await fetch('/api/chat/clear-context', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json'
+        },
         body: JSON.stringify({
           workflowId: workflowId
         })
@@ -1527,7 +1403,6 @@ export default function WorkflowEditor({ workflowId, token, user, onBack, onSave
   const runWorkflow = async () => {
     if (!question.trim()) return
     setLoading(true)
-    setAnswer('')
     setChatHistory([])
 
     try {
@@ -1540,7 +1415,7 @@ export default function WorkflowEditor({ workflowId, token, user, onBack, onSave
       saveChatHistory(newHistory)
 
       // 只执行聊天模式的工作流（isBackgroundMode = false）
-      const ctx = await runFlow(question, nodes, edges, serverConfig, workflowId, (nodeId, status) => {
+      const ctx = await runFlow(question, nodes, edges, serverConfig, workflowId, token, (nodeId, status) => {
         setNodes((ns) => ns.map(n => n.id === nodeId ? { ...n, data: { ...n.data, runtimeStatus: status } } : n))
       }, (nodeId, output) => {
         // 获取节点信息
@@ -1595,7 +1470,6 @@ export default function WorkflowEditor({ workflowId, token, user, onBack, onSave
 
       // 优先使用LLM的输出，其次是answer变量
       const finalAnswer = ctx.llmText || ctx.variables.answer || '工作流执行完成'
-      setAnswer(finalAnswer)
       
       console.log('💾 准备保存聊天记录 - 问题:', question, '回答:', finalAnswer)
       
@@ -1619,8 +1493,7 @@ export default function WorkflowEditor({ workflowId, token, user, onBack, onSave
         return updated
       })
       
-      const errorMsg = '工作流执行失败: ' + (error as Error).message
-      setAnswer(errorMsg)
+      console.error('工作流执行失败:', error)
     } finally {
       setLoading(false)
     }
@@ -1639,6 +1512,7 @@ export default function WorkflowEditor({ workflowId, token, user, onBack, onSave
         edges,
         serverConfig,
         workflowId,
+        token,
         (nodeId, status) => {
           // 更新节点运行状态，但不显示在聊天框
           setNodes((ns) => ns.map(n => n.id === nodeId ? { ...n, data: { ...n.data, runtimeStatus: status } } : n))
@@ -1764,7 +1638,7 @@ export default function WorkflowEditor({ workflowId, token, user, onBack, onSave
           }
         }
         break
-      case 'cond':
+      case 'cond': {
         const defaultCondConfig: CondConfig = { 
           if: { variable: 'query', operator: 'contains', value: '技术' }, 
           elifs: [], 
@@ -1781,6 +1655,30 @@ export default function WorkflowEditor({ workflowId, token, user, onBack, onSave
             handles: ['left'],
             conditionHandles: generateConditionHandles(defaultCondConfig),
             config: defaultCondConfig
+          }
+        }
+        break
+      }
+      case 'device':
+        newNode = {
+          id,
+          type: 'card',
+          position: { x: baseX, y: baseY },
+          data: {
+            label: '设备能力',
+            subtitle: 'Local Runtime only',
+            runtimeType: 'device',
+            icon: 'PC',
+            theme: 'theme-cyan',
+            handles: ['left', 'right'],
+            config: {
+              action: 'system.info',
+              path: '{{query}}',
+              content: '{{query}}',
+              adapterId: '',
+              adapterAction: '',
+              adapterInput: '{\n  "path": "{{query}}"\n}'
+            } as DeviceConfig
           }
         }
         break
@@ -1955,10 +1853,13 @@ export default function WorkflowEditor({ workflowId, token, user, onBack, onSave
                             return <AnalysisResult content={raw} />
                           } else {
                             // 如果只有表格，使用原来的ChartWidget
-                            return <ChartWidget headers={parsed.headers} rows={parsed.rows} />
+                            return <LazyChartWidget headers={parsed.headers} rows={parsed.rows} />
                           }
                         }
-                        return <div className="chat-text" dangerouslySetInnerHTML={{ __html: ((chat as any).meta?.label ? `<div style=\"font-size:12px;color:#64748b;margin-bottom:4px\"><strong>${(chat as any).meta.label}</strong> 输出</div>` : '') + renderMarkdownToHtml(raw) }} />
+                        const safeLabel = (chat as any).meta?.label
+                          ? escapeHtml(String((chat as any).meta.label))
+                          : ''
+                        return <div className="chat-text" dangerouslySetInnerHTML={{ __html: (safeLabel ? `<div style="font-size:12px;color:#64748b;margin-bottom:4px"><strong>${safeLabel}</strong> 输出</div>` : '') + renderMarkdownToHtml(raw) }} />
                       })()}
                       <div className="chat-time">{new Date(chat.timestamp).toLocaleTimeString()}</div>
                     </div>
@@ -2081,6 +1982,50 @@ export default function WorkflowEditor({ workflowId, token, user, onBack, onSave
       else if (label.includes('Query触发器')) nodeType = 'query'
     }
     
+    if (nodeType === 'device') {
+      const cfg: DeviceConfig = selected.data?.config || {
+        action: 'system.info', path: '{{query}}', content: '{{query}}', adapterId: '', adapterAction: '', adapterInput: '{}'
+      }
+      const updateDeviceConfig = (patch: Partial<DeviceConfig>) => setNodes(ns => ns.map(node => node.id === selected.id ? {
+        ...node,
+        data: { ...node.data, config: { ...cfg, ...patch } }
+      } : node))
+      return (
+        <div className="panel">
+          <div className="panel-title">设备能力配置</div>
+          <div className="runtime-node-callout">仅由已配对的 Local Runtime 执行。无任意 Shell，文件路径必须位于 Runtime 配置的授权目录内。</div>
+          <label>本机动作</label>
+          <select value={cfg.action} onChange={event => updateDeviceConfig({ action: event.target.value as DeviceConfig['action'] })}>
+            <option value="system.info">读取系统信息（只读）</option>
+            <option value="file.read">读取文本文件（只读）</option>
+            <option value="file.write">写入文本文件（需显式开启）</option>
+            <option value="app.invoke">调用本地应用适配器（需审批）</option>
+          </select>
+          {(cfg.action === 'file.read' || cfg.action === 'file.write') && <>
+            <label>文件路径</label>
+            <input value={cfg.path} onChange={event => updateDeviceConfig({ path: event.target.value })} placeholder="D:\\NexusFlowData\\note.txt" />
+            <div className="field-hint">支持变量，例如 {'{{query}}'}。最终路径仍会经过目录白名单与符号链接检查。</div>
+          </>}
+          {cfg.action === 'file.write' && <>
+            <label>写入内容</label>
+            <textarea value={cfg.content} onChange={event => updateDeviceConfig({ content: event.target.value })} placeholder="支持 {{query}} 和上游节点变量" />
+            <div className="field-hint">Runtime 必须设置 NEXUSFLOW_ALLOW_WRITES=true，否则节点会安全失败并记录轨迹。</div>
+          </>}
+          {cfg.action === 'app.invoke' && <>
+            <label>适配器 ID</label>
+            <input value={cfg.adapterId || ''} onChange={event => updateDeviceConfig({ adapterId: event.target.value.toLowerCase() })} placeholder="例如：photos" />
+            <label>动作 ID</label>
+            <input value={cfg.adapterAction || ''} onChange={event => updateDeviceConfig({ adapterAction: event.target.value.toLowerCase() })} placeholder="例如：open" />
+            <label>动作输入（JSON）</label>
+            <textarea value={cfg.adapterInput || '{}'} onChange={event => updateDeviceConfig({ adapterInput: event.target.value })} placeholder={'{\n  "path": "{{query}}"\n}'} />
+            <div className="field-hint">适配器和动作必须预先写入 AI PC 的本地清单。工作流只能提供 JSON 输入，无法修改 executable 或启用 Shell。</div>
+            <div className="runtime-node-approval-note"><i />执行时会暂停并等待权限中心批准；持续授权也只能作用于当前设备和该精确动作。</div>
+          </>}
+          <div className="runtime-node-outputs"><span>输出变量</span><code>{`{{device_${selected.id}}}`}</code></div>
+        </div>
+      )
+    }
+
     // 处理Query触发器配置
     if (nodeType === 'query') {
       const cfg: QueryTriggerConfig = selected.data?.config || { enabled: true }
@@ -2827,11 +2772,7 @@ export default function WorkflowEditor({ workflowId, token, user, onBack, onSave
                 }}>
                   上传文档到静态向量库，支持 PDF、Word、TXT 等格式
                 </div>
-                <button
-                  onClick={() => {
-                    // 直接跳转到后端服务器的上传页面
-                    window.location.href = 'http://localhost:5757/upload.html'
-                  }}
+                <label
                   style={{
                     backgroundColor: '#0ea5e9',
                     color: 'white',
@@ -2847,7 +2788,32 @@ export default function WorkflowEditor({ workflowId, token, user, onBack, onSave
                   }}
                 >
                   📤 上传文档
-                </button>
+                  <input
+                    type="file"
+                    hidden
+                    accept=".txt,.md,.docx,.pdf,.xlsx,.csv,.json,.xml,.html,.htm"
+                    onChange={async event => {
+                      const file = event.target.files?.[0]
+                      if (!file) return
+                      const formData = new FormData()
+                      formData.append('file', file)
+                      try {
+                        const response = await fetch('/api/vector/upload', {
+                          method: 'POST',
+                          headers: { 'Authorization': `Bearer ${token}` },
+                          body: formData
+                        })
+                        const result = await response.json()
+                        if (!response.ok) throw new Error(result.error || '上传失败')
+                        window.alert(`上传成功：${result.inserted}/${result.total} 个文档块`)
+                      } catch (error) {
+                        window.alert(`上传失败：${(error as Error).message}`)
+                      } finally {
+                        event.target.value = ''
+                      }
+                    }}
+                  />
+                </label>
               </div>
             )}
             <label>TopK：
@@ -2923,6 +2889,7 @@ export default function WorkflowEditor({ workflowId, token, user, onBack, onSave
                 onChange={(e) => setNodes((ns) => ns.map(n => n.id === selected.id ? { ...n, data: { ...n.data, config: { ...cfg, apiKey: e.target.value } } } : n))} 
               />
             </label>
+            <p className="field-hint">密钥仅保留在当前编辑会话；保存时会被清除。也可在服务端环境变量中配置。</p>
             {cfg.provider === 'openrouter' ? (
               <label>模型：
                 <select value={cfg.model || 'x-ai/grok-4-fast:free'} onChange={(e) => setNodes((ns) => ns.map(n => n.id === selected.id ? { ...n, data: { ...n.data, config: { ...cfg, model: e.target.value } } } : n))}>
@@ -3005,7 +2972,7 @@ export default function WorkflowEditor({ workflowId, token, user, onBack, onSave
             bearerToken: '',
             apiKey: { key: '', value: '', location: 'header' },
             basicAuth: { username: '', password: '' },
-            oauth2: { clientId: '', clientSecret: '', tokenUrl: '', scope: '', grantType: 'client_credentials' },
+            oauth2: { accessToken: '', clientId: '', clientSecret: '', tokenUrl: '', scope: '', grantType: 'client_credentials' },
             customAuth: { headers: [], queryParams: [], bodyParams: [] }
           },
           advanced: {
@@ -3082,9 +3049,9 @@ export default function WorkflowEditor({ workflowId, token, user, onBack, onSave
                     } else if (cfg.auth.type === 'basic' && cfg.auth.basicAuth) {
                       const credentials = btoa(`${cfg.auth.basicAuth.username}:${cfg.auth.basicAuth.password}`)
                       authHeaders['Authorization'] = `Basic ${credentials}`
-                    } else if (cfg.auth.type === 'oauth2' && cfg.auth.oauth2?.clientId) {
+                    } else if (cfg.auth.type === 'oauth2' && cfg.auth.oauth2?.accessToken) {
                       // 直接使用提供的Access Token
-                      authHeaders['Authorization'] = `Bearer ${cfg.auth.oauth2.clientId}`
+                      authHeaders['Authorization'] = `Bearer ${cfg.auth.oauth2.accessToken}`
                     } else if (cfg.auth.type === 'custom' && cfg.auth.customAuth) {
                       // 处理自定义认证的headers
                       cfg.auth.customAuth.headers.forEach(h => {
@@ -3103,12 +3070,12 @@ export default function WorkflowEditor({ workflowId, token, user, onBack, onSave
                     // 渲染URL和Body（与runFlow中的逻辑保持一致）
                     const renderedUrl = renderTemplate(cfg.url, variablesObj)
                     const renderedBody = cfg.bodyType === 'json' ? 
-                      renderTemplate(cfg.bodyJson, variablesObj) : 
+                      renderJsonTemplate(cfg.bodyJson, variablesObj) :
                       cfg.bodyType === 'text' ? 
                       renderTemplate(cfg.bodyText, variablesObj) : ''
                     
                     // 直接发送渲染后的body
-                    let bodyToSend = renderedBody
+                    const bodyToSend = renderedBody
                     
                     const testResult = await api('/api/http-request', {
                       method: cfg.method,
@@ -3120,7 +3087,7 @@ export default function WorkflowEditor({ workflowId, token, user, onBack, onSave
                       advanced: cfg.advanced,
                       authQueryParams,
                       authBodyParams
-                    })
+                    }, token)
                     
                     // 显示测试结果
                     const resultText = `测试结果：
@@ -3200,6 +3167,7 @@ export default function WorkflowEditor({ workflowId, token, user, onBack, onSave
                 <option value="custom">自定义鉴权</option>
               </select>
             </div>
+            <p className="field-hint">鉴权值不会随工作流持久化；形如 {'{{runtime_secret}}'} 的运行时变量引用可以保存。</p>
 
             {/* Bearer Token */}
             {cfg.auth.type === 'bearer' && (
@@ -3207,7 +3175,7 @@ export default function WorkflowEditor({ workflowId, token, user, onBack, onSave
                 <div className="form-group">
                   <label>Token</label>
                   <input 
-                    type="text" 
+                    type="password"
                     value={cfg.auth.bearerToken || ''} 
                     onChange={(e) => setNodes((ns) => ns.map(n => n.id === selected.id ? { ...n, data: { ...n.data, config: { ...cfg, auth: { ...cfg.auth, bearerToken: e.target.value } } } } : n))}
                     placeholder="输入Bearer Token" 
@@ -3246,7 +3214,7 @@ export default function WorkflowEditor({ workflowId, token, user, onBack, onSave
                 <div className="form-group">
                   <label>API Key</label>
                   <input 
-                    type="text" 
+                    type="password"
                     value={cfg.auth.apiKey?.value || ''} 
                     onChange={(e) => setNodes((ns) => ns.map(n => n.id === selected.id ? { ...n, data: { ...n.data, config: { ...cfg, auth: { ...cfg.auth, apiKey: { ...cfg.auth.apiKey!, value: e.target.value } } } } } : n))}
                     placeholder="输入API Key" 
@@ -3280,9 +3248,9 @@ export default function WorkflowEditor({ workflowId, token, user, onBack, onSave
                 <div className="form-group">
                   <label>Access Token</label>
                   <input 
-                    type="text" 
-                    value={cfg.auth.oauth2?.clientId || ''} 
-                    onChange={(e) => setNodes((ns) => ns.map(n => n.id === selected.id ? { ...n, data: { ...n.data, config: { ...cfg, auth: { ...cfg.auth, oauth2: { ...cfg.auth.oauth2!, clientId: e.target.value } } } } } : n))}
+                    type="password"
+                    value={cfg.auth.oauth2?.accessToken || ''}
+                    onChange={(e) => setNodes((ns) => ns.map(n => n.id === selected.id ? { ...n, data: { ...n.data, config: { ...cfg, auth: { ...cfg.auth, oauth2: { ...cfg.auth.oauth2!, accessToken: e.target.value } } } } } : n))}
                     placeholder="输入Access Token" 
                   />
                 </div>
@@ -3565,7 +3533,7 @@ export default function WorkflowEditor({ workflowId, token, user, onBack, onSave
               <input 
                 type="file" 
                 id={`file-upload-${selected.id}`}
-                accept=".csv,.xlsx,.xls"
+                accept=".csv,.xlsx"
                 onChange={async (e) => {
                   const file = e.target.files?.[0];
                   if (!file) return;
@@ -3574,8 +3542,9 @@ export default function WorkflowEditor({ workflowId, token, user, onBack, onSave
                   formData.append('file', file);
                   
                   try {
-                    const response = await fetch('http://localhost:5757/api/upload-data', {
+                    const response = await fetch('/api/upload-data', {
                       method: 'POST',
+                      headers: { 'Authorization': `Bearer ${token}` },
                       body: formData
                     });
                     
@@ -3774,121 +3743,67 @@ export default function WorkflowEditor({ workflowId, token, user, onBack, onSave
     <div className="app">
       <div className="left">
         <div className="canvas-header">
-          <div style={{ 
-            display: 'flex', 
-            justifyContent: 'space-between', 
-            alignItems: 'center',
-            marginBottom: '10px',
-            padding: '10px',
-            background: '#f8f9fa',
-            borderRadius: '6px'
-          }}>
-            <div>
-              <div style={{ fontSize: '14px', fontWeight: '500', color: '#333' }}>
-                欢迎, {user?.username}
-              </div>
-              <div style={{ fontSize: '12px', color: '#666' }}>
-                {user?.email}
-              </div>
-            </div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-              {workflowId !== 'new' && (
-                <div style={{ fontSize: '12px', color: '#666' }}>
-                  {saveStatus === 'saved' && '✅ 已保存'}
-                  {saveStatus === 'saving' && '⏳ 保存中...'}
-                  {saveStatus === 'error' && '❌ 保存失败'}
-                </div>
-              )}
-              {/* 后台任务控制按钮 */}
-              {!isBackgroundRunning ? (
-                <button
-                  onClick={startBackgroundTask}
-                  style={{
-                    background: '#10b981',
-                    color: 'white',
-                    border: 'none',
-                    padding: '6px 12px',
-                    borderRadius: '4px',
-                    cursor: 'pointer',
-                    fontSize: '12px',
-                    marginRight: '8px',
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: '4px'
-                  }}
-                >
-                  ▶️ 启动后台任务
-                </button>
-              ) : (
-                <button
-                  onClick={stopBackgroundTask}
-                  style={{
-                    background: '#ef4444',
-                    color: 'white',
-                    border: 'none',
-                    padding: '6px 12px',
-                    borderRadius: '4px',
-                    cursor: 'pointer',
-                    fontSize: '12px',
-                    marginRight: '8px',
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: '4px'
-                  }}
-                >
-                  ⏹️ 停止后台任务
-                </button>
-              )}
+          <div className="editor-topbar">
+            <div className="editor-context">
               <button
+                className="editor-back-button"
                 onClick={async () => {
-                  // 在返回前自动保存工作流
                   if (workflowId !== 'new') {
-                    try {
-                      await handleSave();
-                    } catch (error) {
-                      console.error('自动保存失败:', error);
-                      // 即使保存失败也继续返回
-                    }
+                    try { await handleSave(); } catch (error) { console.error('自动保存失败:', error); }
                   }
                   onBack();
                 }}
-                style={{
-                  background: '#ff4757',
-                  color: 'white',
-                  border: 'none',
-                  padding: '6px 12px',
-                  borderRadius: '4px',
-                  cursor: 'pointer',
-                  fontSize: '12px'
-                }}
+                aria-label="返回工作流列表"
               >
-                返回
+                ←
               </button>
+              <span className="nexus-mark compact" aria-hidden="true"><span /><span /><span /></span>
+              <div>
+                <div className="editor-workflow-label">WORKFLOW CANVAS</div>
+                <div className="editor-workflow-title">{workflowId === 'new' ? '未命名工作流' : `工作流 · ${user?.username || ''}`}</div>
+              </div>
+            </div>
+            <div className="editor-actions">
+              {workflowId !== 'new' && (
+                <div className={`save-indicator ${saveStatus}`}>
+                  <i />
+                  {saveStatus === 'saved' && '已保存'}
+                  {saveStatus === 'saving' && '保存中'}
+                  {saveStatus === 'error' && '保存失败'}
+                </div>
+              )}
+              {!isBackgroundRunning ? (
+                <button className="runtime-action" onClick={startBackgroundTask}><i />启动运行</button>
+              ) : (
+                <button className="runtime-action stop" onClick={stopBackgroundTask}><i />停止运行</button>
+              )}
             </div>
           </div>
           
-          <div className="new-node-container">
-            <button 
-              className="new-node-btn" 
-              onClick={() => setShowNewNodeMenu(!showNewNodeMenu)}
-            >
-              + 新建插件
-            </button>
-            {showNewNodeMenu && (
-              <div className="new-node-menu">
-                <button onClick={() => createNewNode('kb')}>📚 知识检索</button>
-                <button onClick={() => createNewNode('cond')}>🧩 条件分支</button>
-                <button onClick={() => createNewNode('llm')}>🤖 LLM</button>
-                <button onClick={() => createNewNode('http')}>🌐 HTTP请求</button>
-                <button onClick={() => createNewNode('analysis')}>📊 数据分析</button>
-                <button onClick={() => createNewNode('reply')}>🟠 直接回复</button>
-                <div style={{borderTop:'1px solid #e5e7eb', margin:'4px 0'}}></div>
-                <button onClick={() => createNewNode('query')}>🎯 Query触发器</button>
-                <button onClick={() => createNewNode('loop')}>⏱️ 循环定时器</button>
-                <button onClick={() => createNewNode('start_chat')}>💬 开始（聊天）</button>
-                <button onClick={() => createNewNode('start_background')}>⚙️ 开始（后台）</button>
-              </div>
-            )}
+          <div className="editor-toolbar">
+            <div className="new-node-container">
+              <button className={`new-node-btn ${showNewNodeMenu ? 'open' : ''}`} onClick={() => setShowNewNodeMenu(!showNewNodeMenu)}>
+                <span>＋</span> 添加能力 <b>⌄</b>
+              </button>
+              {showNewNodeMenu && (
+                <div className="new-node-menu">
+                  <div className="node-menu-label">INTELLIGENCE</div>
+                  <button onClick={() => createNewNode('llm')}><i className="node-menu-icon">AI</i><span><strong>模型推理</strong><small>OpenAI-compatible LLM</small></span></button>
+                  <button onClick={() => createNewNode('kb')}><i className="node-menu-icon">KB</i><span><strong>知识检索</strong><small>Vector knowledge search</small></span></button>
+                  <button onClick={() => createNewNode('cond')}><i className="node-menu-icon">IF</i><span><strong>条件分支</strong><small>Intent routing</small></span></button>
+                  <div className="node-menu-label">TOOLS & OUTPUT</div>
+                  <button onClick={() => createNewNode('http')}><i className="node-menu-icon">↗</i><span><strong>HTTP 请求</strong><small>External tool call</small></span></button>
+                  <button onClick={() => createNewNode('device')}><i className="node-menu-icon">PC</i><span><strong>设备能力</strong><small>Safe local action</small></span></button>
+                  <button onClick={() => createNewNode('analysis')}><i className="node-menu-icon">▥</i><span><strong>数据分析</strong><small>Structured analysis</small></span></button>
+                  <button onClick={() => createNewNode('reply')}><i className="node-menu-icon">↵</i><span><strong>直接回复</strong><small>Response output</small></span></button>
+                  <div className="node-menu-label">TRIGGERS</div>
+                  <button onClick={() => createNewNode('query')}><i className="node-menu-icon">◎</i><span><strong>Query 触发器</strong><small>User request</small></span></button>
+                  <button onClick={() => createNewNode('loop')}><i className="node-menu-icon">↻</i><span><strong>循环定时器</strong><small>Scheduled loop</small></span></button>
+                  <button onClick={() => createNewNode('start_chat')}><i className="node-menu-icon">◇</i><span><strong>聊天开始</strong><small>Foreground session</small></span></button>
+                  <button onClick={() => createNewNode('start_background')}><i className="node-menu-icon">◉</i><span><strong>后台开始</strong><small>Background agent</small></span></button>
+                </div>
+              )}
+            </div>
             <button 
               className="delete-node-btn" 
               onClick={() => {
@@ -3902,12 +3817,12 @@ export default function WorkflowEditor({ workflowId, token, user, onBack, onSave
             >
               {selectedEdge ? '删除连线' : '删除节点'}
             </button>
+            <div className="editor-toolbar-spacer" />
+            <span className="canvas-hint"><kbd>⌫</kbd> 删除 · <kbd>拖拽</kbd> 连接节点</span>
           </div>
         </div>
         
         <div className="canvas">
-          {console.log('Current nodes:', nodes.map(n => ({ id: n.id, type: n.type, data: n.data })))}
-          {console.log('NodeTypes:', nodeTypes)}
           <ReactFlow
             nodes={nodes}
             edges={edges}
@@ -3919,7 +3834,6 @@ export default function WorkflowEditor({ workflowId, token, user, onBack, onSave
               setSelectedNodeId(n.id)
               setSelectedEdgeId(null)
               // 打开配置面板
-              setActiveTab('config')
               setConfigOpen(true)
               setPreviewOpen(false)
             }}
@@ -3935,24 +3849,24 @@ export default function WorkflowEditor({ workflowId, token, user, onBack, onSave
               type: 'smoothstep', 
               animated: false, 
               style: { 
-                stroke: '#8b5cf6', 
+                stroke: '#38bdf8',
                 strokeWidth: 2 
               }
             }}
             fitView
           >
-            <Background gap={18} size={1} color="#e5e7eb" />
+            <Background gap={22} size={1} color="#26364a" />
             <Controls />
           </ReactFlow>
         </div>
       </div>
-      <div className={`right ${collapsed ? 'right-collapsed' : ''}`}>
+      <div className="right">
         <div className="right-header">
-          <div className="tabs fixed-tabs">
+          <div className="inspector-heading"><span>INSPECTOR</span><strong>{previewOpen ? '运行预览' : '节点配置'}</strong></div>
+          <div className="tabs fixed-tabs" role="tablist">
             <button
               className={previewOpen ? 'tab active' : 'tab'}
               onClick={() => {
-                setActiveTab('input')
                 setPreviewOpen(v => !v)
                 if (configOpen) setConfigOpen(false)
               }}
@@ -3960,7 +3874,6 @@ export default function WorkflowEditor({ workflowId, token, user, onBack, onSave
             <button
               className={configOpen ? 'tab active' : 'tab'}
               onClick={() => {
-                setActiveTab('config')
                 setConfigOpen(v => !v)
                 if (previewOpen) setPreviewOpen(false)
               }}
@@ -3973,20 +3886,12 @@ export default function WorkflowEditor({ workflowId, token, user, onBack, onSave
               }
             }}
             disabled={chatHistory.length === 0}
-            style={{ 
-              backgroundColor: chatHistory.length === 0 ? '#f3f4f6' : '#8b5cf6',
-              color: chatHistory.length === 0 ? '#9ca3af' : 'white',
-              border: 'none',
-              padding: '8px 16px',
-              borderRadius: '6px',
-              cursor: chatHistory.length === 0 ? 'not-allowed' : 'pointer',
-              marginLeft: 'auto'
-            }}
+            className="clear-history-button"
           >
-            清除记录
+            清除
           </button>
         </div>
-        <div style={{ padding: '12px', overflowY: 'auto', minHeight: 0 }}>
+        <div className="inspector-body">
           {previewOpen && chatInterface}
           {configOpen && rightPanel}
         </div>

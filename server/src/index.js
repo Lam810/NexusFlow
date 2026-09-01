@@ -5,40 +5,429 @@ import fetch from 'node-fetch';
 import multer from 'multer';
 import fs from 'fs';
 import path from 'path';
-import XLSX from 'xlsx';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
+import { pathToFileURL } from 'node:url';
+import ExcelJS from 'exceljs';
 import csv from 'csv-parser';
 import VectorDB from './vectorDB.js';
 import FileParser from './fileParser.js';
 import EnhancedVectorSearch from './enhancedVectorSearch.js';
 import jwt from 'jsonwebtoken';
 import bcrypt from 'bcryptjs';
+import { Ratelimit } from '@upstash/ratelimit';
+import { Redis } from '@upstash/redis';
+import {
+  assertSecureJwtSecret,
+  createCorsOptions,
+  createCookieOriginGuard,
+  createJwtAuthenticator,
+  createRateLimiter as createMemoryRateLimiter,
+  parseAllowedOrigins,
+  readTextLimited,
+  safeFetch,
+  sanitizeWorkflowNodes,
+  substituteVariables,
+} from './security.js';
+import {
+  assertModelConfigEncryptionKey,
+  decryptModelApiKey,
+  encryptModelApiKey,
+  normalizeModelName,
+  normalizeOpenAIBaseUrl,
+  openAICompatibleEndpoint,
+} from './modelConfig.js';
 
 const app = express();
-app.use(cors());
-app.use(express.json({ limit: '50mb' }));
-app.use(express.static('public'));
-
-const upload = multer({ 
-  dest: 'uploads/',
-  limits: {
-    fileSize: 50 * 1024 * 1024 // 50MB
-  }
-});
-// 初始化向量数据库和增强搜索
-const vectorDB = new VectorDB();
-const fileParser = new FileParser();
-const enhancedSearch = new EnhancedVectorSearch(vectorDB);
-
-
 const QWEN_BASE_URL = 'https://dashscope.aliyuncs.com/compatible-mode/v1';
 const QWEN_API_KEY = process.env.QWEN_API_KEY;
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY;
 const LOCAL_MODEL_URL = process.env.LOCAL_MODEL_URL || 'http://localhost:8000/v1/chat/completions';
-const JWT_SECRET = process.env.JWT_SECRET || 'replace-with-a-local-development-secret';
+const JWT_SECRET = assertSecureJwtSecret(process.env.JWT_SECRET);
+const IS_PRODUCTION = process.env.NODE_ENV === 'production';
+const MODEL_CONFIG_ENCRYPTION_KEY = assertModelConfigEncryptionKey(
+  process.env.MODEL_CONFIG_ENCRYPTION_KEY || (!IS_PRODUCTION ? JWT_SECRET : '')
+);
+const IS_VERCEL = Boolean(process.env.VERCEL);
+const vercelOrigins = [process.env.VERCEL_URL, process.env.VERCEL_BRANCH_URL, process.env.VERCEL_PROJECT_PRODUCTION_URL]
+  .filter(Boolean)
+  .map(hostname => `https://${hostname}`);
+const CORS_ORIGINS = [
+  process.env.CORS_ORIGINS || (!IS_PRODUCTION ? 'http://localhost:5173,http://127.0.0.1:5173' : ''),
+  ...vercelOrigins,
+].filter(Boolean).join(',');
+const TURSO_DATABASE_URL = process.env.TURSO_DATABASE_URL || process.env.DATABASE_PATH || 'vector_knowledge.db';
+const TURSO_AUTH_TOKEN = process.env.TURSO_AUTH_TOKEN || '';
+const UPSTASH_REDIS_REST_URL = process.env.UPSTASH_REDIS_REST_URL || process.env.KV_REST_API_URL || '';
+const UPSTASH_REDIS_REST_TOKEN = process.env.UPSTASH_REDIS_REST_TOKEN || process.env.KV_REST_API_TOKEN || '';
+const HOST = process.env.HOST || '127.0.0.1';
+const PORT = Number(process.env.PORT) || 5757;
+const UPLOAD_DIR = path.resolve(process.env.UPLOAD_DIR || (IS_VERCEL ? '/tmp/nexusflow-uploads' : 'uploads'));
+const MAX_UPLOAD_BYTES = Math.max(
+  64 * 1024,
+  Math.min(Number(process.env.MAX_UPLOAD_BYTES) || (IS_VERCEL ? 4_000_000 : 20 * 1024 * 1024), IS_VERCEL ? 4_000_000 : 20 * 1024 * 1024)
+);
+const SESSION_COOKIE_NAME = IS_PRODUCTION ? '__Host-nexusflow_session' : 'nexusflow_session';
+const SESSION_TTL_SECONDS = Math.max(900, Math.min(Number(process.env.SESSION_TTL_SECONDS) || 43_200, 604_800));
+const EXPOSE_AUTH_TOKEN = process.env.EXPOSE_AUTH_TOKEN === 'true';
+const ALLOW_REGISTRATION = process.env.ALLOW_REGISTRATION === 'true' || !IS_PRODUCTION;
+const configuredBcryptRounds = Number(process.env.BCRYPT_ROUNDS) || (IS_PRODUCTION ? 12 : 10);
+const BCRYPT_ROUNDS = Math.max(IS_PRODUCTION ? 12 : 4, Math.min(configuredBcryptRounds, 14));
+const ALLOW_PRIVATE_NETWORK_REQUESTS = process.env.ALLOW_PRIVATE_NETWORK_REQUESTS === 'true';
+const MAX_PROXY_RESPONSE_BYTES = Math.max(
+  64 * 1024,
+  Math.min(Number(process.env.MAX_PROXY_RESPONSE_BYTES) || 2 * 1024 * 1024, 10 * 1024 * 1024)
+);
 
 // 动态知识库配置
 const KNOWLEDGE_API_URL = process.env.KNOWLEDGE_API_URL || 'http://localhost:5000';
+
+if (IS_PRODUCTION) {
+  const allowedOrigins = parseAllowedOrigins(CORS_ORIGINS);
+  if (allowedOrigins.size === 0 || [...allowedOrigins].some(origin => {
+    try {
+      return new URL(origin).protocol !== 'https:';
+    } catch {
+      return true;
+    }
+  })) {
+    throw new Error('Production CORS_ORIGINS must contain only valid HTTPS origins.');
+  }
+  if (process.env.ENABLE_LEGACY_ADMIN === 'true') {
+    throw new Error('ENABLE_LEGACY_ADMIN cannot be enabled in production.');
+  }
+  if (EXPOSE_AUTH_TOKEN) {
+    throw new Error('EXPOSE_AUTH_TOKEN cannot be enabled in production.');
+  }
+  if (!process.env.MODEL_CONFIG_ENCRYPTION_KEY) {
+    throw new Error('MODEL_CONFIG_ENCRYPTION_KEY is required in production.');
+  }
+  if (process.env.MODEL_CONFIG_ENCRYPTION_KEY === JWT_SECRET) {
+    throw new Error('MODEL_CONFIG_ENCRYPTION_KEY must be different from JWT_SECRET in production.');
+  }
+  if (IS_VERCEL && (!process.env.TURSO_DATABASE_URL || !TURSO_AUTH_TOKEN)) {
+    throw new Error('TURSO_DATABASE_URL and TURSO_AUTH_TOKEN are required on Vercel.');
+  }
+  if (IS_VERCEL && (!UPSTASH_REDIS_REST_URL || !UPSTASH_REDIS_REST_TOKEN)) {
+    throw new Error('UPSTASH_REDIS_REST_URL and UPSTASH_REDIS_REST_TOKEN are required on Vercel.');
+  }
+}
+
+const redisClient = UPSTASH_REDIS_REST_URL && UPSTASH_REDIS_REST_TOKEN
+  ? new Redis({ url: UPSTASH_REDIS_REST_URL, token: UPSTASH_REDIS_REST_TOKEN })
+  : null;
+
+function createRequestLimiter({ windowMs, limit, prefix, keyGenerator }) {
+  if (!redisClient) {
+    return createMemoryRateLimiter({ windowMs, max: limit, keyPrefix: `nexusflow:${prefix}` });
+  }
+
+  const limiter = new Ratelimit({
+    redis: redisClient,
+    limiter: Ratelimit.slidingWindow(limit, `${Math.ceil(windowMs / 1000)} s`),
+    prefix: `nexusflow:${prefix}`,
+    analytics: false,
+    timeout: 3_000,
+  });
+
+  return async (req, res, next) => {
+    const identifier = keyGenerator
+      ? String(keyGenerator(req))
+      : String(req.ip || req.socket.remoteAddress || 'unknown');
+    try {
+      const result = await limiter.limit(identifier);
+      res.setHeader('RateLimit-Limit', String(result.limit));
+      res.setHeader('RateLimit-Remaining', String(result.remaining));
+      res.setHeader('RateLimit-Reset', String(Math.ceil(result.reset / 1000)));
+      if (!result.success) {
+        res.setHeader('Retry-After', String(Math.max(1, Math.ceil((result.reset - Date.now()) / 1000))));
+        return res.status(429).json({ error: '请求过于频繁，请稍后重试' });
+      }
+      return next();
+    } catch (error) {
+      console.error('Rate limiter failed:', error.message);
+      if (IS_PRODUCTION) return res.status(503).json({ error: '请求限流服务暂时不可用' });
+      return next();
+    }
+  };
+}
+
+const authenticateToken = createJwtAuthenticator(jwt, JWT_SECRET, [SESSION_COOKIE_NAME]);
+const cookieOriginGuard = createCookieOriginGuard(CORS_ORIGINS);
+const apiRateLimiter = createRequestLimiter({ windowMs: 60_000, limit: 120, prefix: 'api' });
+const authRateLimiter = createRequestLimiter({ windowMs: 15 * 60_000, limit: 10, prefix: 'auth' });
+const loginAccountRateLimiter = createRequestLimiter({
+  windowMs: 15 * 60_000,
+  limit: 30,
+  prefix: 'login-account',
+  keyGenerator: req => createHash('sha256')
+    .update(String(req.body?.username || '').trim().toLowerCase())
+    .digest('hex'),
+});
+const publicApiPaths = new Set(['/health', '/auth/config', '/auth/login', '/auth/register']);
+const runtimeAgentPathPrefix = '/runtime/agent/';
+const DUMMY_PASSWORD_HASH = await bcrypt.hash(randomUUID(), BCRYPT_ROUNDS);
+
+app.disable('x-powered-by');
+if (IS_PRODUCTION) app.set('trust proxy', 1);
+app.use(cors(createCorsOptions(CORS_ORIGINS)));
+app.use(express.json({ limit: '2mb' }));
+app.use('/api', apiRateLimiter);
+app.use('/api', (req, res, next) => {
+  if (publicApiPaths.has(req.path) || req.path.startsWith(runtimeAgentPathPrefix)) return next();
+  return authenticateToken(req, res, error => {
+    if (error) return next(error);
+    return cookieOriginGuard(req, res, next);
+  });
+});
+
+if (process.env.ENABLE_LEGACY_ADMIN === 'true') {
+  app.use('/legacy', express.static(path.resolve('public'), {
+    dotfiles: 'deny',
+    index: false,
+    redirect: false,
+  }));
+}
+
+fs.mkdirSync(UPLOAD_DIR, { recursive: true });
+const upload = multer({
+  dest: UPLOAD_DIR,
+  fileFilter: (_req, file, callback) => {
+    const allowedExtensions = new Set([
+      '.txt', '.md', '.docx', '.pdf', '.xlsx', '.csv', '.json', '.xml', '.html', '.htm'
+    ]);
+    const extension = path.extname(file.originalname || '').toLowerCase();
+    callback(allowedExtensions.has(extension) ? null : new Error('Unsupported file extension.'), allowedExtensions.has(extension));
+  },
+  limits: {
+    fileSize: MAX_UPLOAD_BYTES,
+    files: 1,
+  },
+});
+
+// 初始化向量数据库和增强搜索
+const vectorDB = new VectorDB({ url: TURSO_DATABASE_URL, authToken: TURSO_AUTH_TOKEN });
+const fileParser = new FileParser();
+const enhancedSearch = new EnhancedVectorSearch(vectorDB);
+const MAX_RUNTIME_TRACE_BYTES = 64 * 1024;
+const RUNTIME_ONLINE_WINDOW_MS = 90_000;
+
+function hashRuntimeToken(token) {
+  return createHash('sha256').update(token).digest('hex');
+}
+
+function runtimeDeviceView(device) {
+  if (!device) return null;
+  const lastSeen = device.last_seen_at
+    ? Date.parse(`${String(device.last_seen_at).replace(' ', 'T')}Z`)
+    : 0;
+  return {
+    id: device.id,
+    name: device.name,
+    capabilities: device.capabilities || {},
+    lastSeenAt: device.last_seen_at || null,
+    createdAt: device.created_at,
+    revokedAt: device.revoked_at || null,
+    online: !device.revoked_at && Number.isFinite(lastSeen) && Date.now() - lastSeen <= RUNTIME_ONLINE_WINDOW_MS,
+  };
+}
+
+function normalizeRuntimeCapabilities(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
+  const serialized = JSON.stringify(value);
+  if (Buffer.byteLength(serialized) > 8 * 1024) throw new Error('设备能力信息过大');
+  return JSON.parse(serialized);
+}
+
+function boundedRuntimeValue(value, fieldName) {
+  if (value === undefined) return null;
+  let serialized;
+  try {
+    serialized = JSON.stringify(value);
+  } catch {
+    throw new Error(`${fieldName} 必须是可序列化的 JSON`);
+  }
+  if (Buffer.byteLength(serialized) > MAX_RUNTIME_TRACE_BYTES) {
+    throw new Error(`${fieldName} 超过 ${MAX_RUNTIME_TRACE_BYTES / 1024}KB 限制`);
+  }
+  return JSON.parse(serialized);
+}
+
+async function authenticateRuntimeDevice(req, res, next) {
+  const header = String(req.headers.authorization || '').trim();
+  const match = header.match(/^Bearer\s+(nfr_[A-Za-z0-9_-]+)$/i);
+  if (!match) return res.status(401).json({ error: 'Runtime 设备令牌无效' });
+  try {
+    const device = await vectorDB.getRuntimeDeviceByTokenHash(hashRuntimeToken(match[1]));
+    if (!device) return res.status(401).json({ error: 'Runtime 设备令牌无效或已撤销' });
+    req.runtimeDevice = device;
+    return next();
+  } catch (error) {
+    return next(error);
+  }
+}
+
+const sanitizedWorkflowCount = await vectorDB.sanitizeStoredWorkflows(sanitizeWorkflowNodes);
+if (sanitizedWorkflowCount > 0) {
+  console.warn(`Removed persisted secrets from ${sanitizedWorkflowCount} workflow(s).`);
+}
+
+function modelRequestSecurityOptions(provider, apiUrl, timeoutMs = 60_000) {
+  let usesConfiguredLocalEndpoint = false;
+  if (provider === 'local') {
+    try {
+      usesConfiguredLocalEndpoint = new URL(apiUrl || LOCAL_MODEL_URL).href === new URL(LOCAL_MODEL_URL).href;
+    } catch {
+      usesConfiguredLocalEndpoint = false;
+    }
+  }
+  return {
+    allowPrivate: ALLOW_PRIVATE_NETWORK_REQUESTS || usesConfiguredLocalEndpoint,
+    timeoutMs,
+  };
+}
+
+async function getStoredModelConfig(userId) {
+  const stored = await vectorDB.getUserModelConfig(userId);
+  if (!stored) return null;
+  return {
+    baseUrl: stored.base_url,
+    model: stored.model,
+    embeddingModel: stored.embedding_model || '',
+    apiKey: decryptModelApiKey(stored.api_key_encrypted, MODEL_CONFIG_ENCRYPTION_KEY, userId),
+  };
+}
+
+async function resolveChatModel(userId, { provider = 'qwen', apiUrl, apiKey, model = 'qwen-plus' }) {
+  const stored = await getStoredModelConfig(userId);
+  if (stored) {
+    return {
+      endpoint: openAICompatibleEndpoint(stored.baseUrl, 'chat/completions'),
+      key: stored.apiKey,
+      model: stored.model,
+      isLocal: false,
+      securityOptions: modelRequestSecurityOptions('account', stored.baseUrl),
+    };
+  }
+
+  if (provider === 'local') {
+    const endpoint = apiUrl || LOCAL_MODEL_URL;
+    return {
+      endpoint,
+      key: null,
+      model: model || 'local-model',
+      isLocal: true,
+      securityOptions: modelRequestSecurityOptions(provider, endpoint),
+    };
+  }
+
+  const key = provider === 'openai'
+    ? apiKey || OPENAI_API_KEY
+    : provider === 'openrouter'
+      ? apiKey || OPENROUTER_API_KEY
+      : apiKey || QWEN_API_KEY;
+  if (!key) throw new Error('请先在“模型设置”中配置 OpenAI 兼容 API');
+  const baseUrl = apiUrl || (provider === 'openai'
+    ? 'https://api.openai.com/v1'
+    : provider === 'openrouter'
+      ? 'https://openrouter.ai/api/v1'
+      : QWEN_BASE_URL);
+  return {
+    endpoint: openAICompatibleEndpoint(baseUrl, 'chat/completions'),
+    key,
+    model,
+    isLocal: false,
+    securityOptions: modelRequestSecurityOptions(provider, apiUrl),
+  };
+}
+
+async function hasWorkflowAccess(userId, workflowId) {
+  if (!workflowId || typeof workflowId !== 'string') return false;
+  return Boolean(await vectorDB.getWorkflow(userId, workflowId));
+}
+
+function sessionCookieOptions() {
+  return {
+    httpOnly: true,
+    secure: IS_PRODUCTION,
+    sameSite: 'strict',
+    path: '/',
+    maxAge: SESSION_TTL_SECONDS * 1000,
+  };
+}
+
+function issueSession(res, user) {
+  const token = jwt.sign(
+    { id: user.id, username: user.username, email: user.email },
+    JWT_SECRET,
+    {
+      algorithm: 'HS256',
+      expiresIn: SESSION_TTL_SECONDS,
+      issuer: 'nexusflow',
+      audience: 'nexusflow-client',
+    }
+  );
+  res.cookie(SESSION_COOKIE_NAME, token, sessionCookieOptions());
+  res.setHeader('Cache-Control', 'no-store');
+  return token;
+}
+
+function publicUser(user) {
+  return { id: user.id, username: user.username, email: user.email };
+}
+
+function publicModelConfig(config) {
+  if (!config) {
+    return { configured: false, baseUrl: '', model: '', embeddingModel: '', hasApiKey: false };
+  }
+  return {
+    configured: true,
+    baseUrl: config.base_url,
+    model: config.model,
+    embeddingModel: config.embedding_model || '',
+    hasApiKey: Boolean(config.api_key_encrypted),
+  };
+}
+
+app.get('/api/model-config', async (req, res) => {
+  res.setHeader('Cache-Control', 'no-store');
+  res.json(publicModelConfig(await vectorDB.getUserModelConfig(req.user.id)));
+});
+
+app.put('/api/model-config', async (req, res) => {
+  try {
+    const existing = await vectorDB.getUserModelConfig(req.user.id);
+    const baseUrl = normalizeOpenAIBaseUrl(req.body.baseUrl, { requireHttps: IS_PRODUCTION });
+    const model = normalizeModelName(req.body.model);
+    const embeddingModel = normalizeModelName(req.body.embeddingModel, { required: false });
+    const apiKey = String(req.body.apiKey || '').trim();
+    if (!apiKey && !existing?.api_key_encrypted) {
+      return res.status(400).json({ error: '首次配置时必须填写 API Key' });
+    }
+    if (apiKey.length > 8_192) {
+      return res.status(400).json({ error: 'API Key 过长' });
+    }
+    const apiKeyEncrypted = apiKey
+      ? encryptModelApiKey(apiKey, MODEL_CONFIG_ENCRYPTION_KEY, req.user.id)
+      : existing.api_key_encrypted;
+    const saved = await vectorDB.upsertUserModelConfig(req.user.id, {
+      baseUrl,
+      model,
+      embeddingModel,
+      apiKeyEncrypted,
+    });
+    res.setHeader('Cache-Control', 'no-store');
+    res.json(publicModelConfig(saved));
+  } catch (error) {
+    res.status(400).json({ error: error.message });
+  }
+});
+
+app.delete('/api/model-config', async (req, res) => {
+  await vectorDB.deleteUserModelConfig(req.user.id);
+  res.setHeader('Cache-Control', 'no-store');
+  res.json({ success: true });
+});
 
 // 聊天记录管理API端点
 app.post('/api/chat/add-context', async (req, res) => {
@@ -48,19 +437,21 @@ app.post('/api/chat/add-context', async (req, res) => {
     if (!workflowId || !question || !answer) {
       return res.status(400).json({ error: 'workflowId、question和answer不能为空' });
     }
-    
-    console.log('📝 收到保存请求 - 问题:', question.substring(0, 50), '回答:', answer.substring(0, 50));
+    if (!(await hasWorkflowAccess(req.user.id, workflowId))) {
+      return res.status(404).json({ error: '工作流不存在' });
+    }
     
     // 生成问题的embedding用于后续相似度搜索
     let questionEmbedding = null;
     try {
-      questionEmbedding = await createEmbedding(question);
+      questionEmbedding = await createEmbedding(question, req.user.id);
       console.log('✅ 问题embedding生成成功');
     } catch (embError) {
       console.warn('⚠️ 生成问题embedding失败:', embError.message);
     }
     
-    const result = vectorDB.saveChatHistory(
+    const result = await vectorDB.saveChatHistory(
+      req.user.id,
       workflowId, 
       question, 
       answer, 
@@ -92,23 +483,18 @@ app.post('/api/chat/search-context', async (req, res) => {
     if (!workflowId) {
       return res.status(400).json({ error: 'workflowId不能为空' });
     }
-    
-    console.log('🔍 收到搜索请求 - 查询:', query, 'workflowId:', workflowId);
+    if (!(await hasWorkflowAccess(req.user.id, workflowId))) {
+      return res.status(404).json({ error: '工作流不存在' });
+    }
     
     // 生成查询的embedding
-    const queryEmbedding = await createEmbedding(query);
+    const queryEmbedding = await createEmbedding(query, req.user.id);
     console.log('✅ 查询embedding生成成功');
     
     // 搜索相似的聊天历史
-    const results = vectorDB.searchChatHistory(queryEmbedding, workflowId, topK);
+    const results = await vectorDB.searchChatHistory(req.user.id, queryEmbedding, workflowId, topK);
     
     console.log(`📊 找到 ${results.length} 条相关历史记录`);
-    if (results.length > 0) {
-      results.forEach((r, i) => {
-        console.log(`  [${i + 1}] 相似度: ${r.similarity.toFixed(4)} - 问题: ${r.question.substring(0, 30)}`);
-      });
-    }
-    
     res.json({ 
       success: true,
       results: results,
@@ -127,10 +513,13 @@ app.post('/api/chat/clear-context', async (req, res) => {
     if (!workflowId) {
       return res.status(400).json({ error: 'workflowId不能为空' });
     }
+    if (!(await hasWorkflowAccess(req.user.id, workflowId))) {
+      return res.status(404).json({ error: '工作流不存在' });
+    }
     
     console.log('🗑️ 收到清除请求 - workflowId:', workflowId);
     
-    const deletedCount = vectorDB.clearChatHistory(workflowId);
+    const deletedCount = await vectorDB.clearChatHistory(req.user.id, workflowId);
     
     console.log(`✅ 已清除 ${deletedCount} 条聊天记录`);
     
@@ -151,41 +540,30 @@ if (!OPENROUTER_API_KEY) console.warn('OPENROUTER_API_KEY not set. Set it in ser
 console.log(`Local model URL: ${LOCAL_MODEL_URL}`);
 console.log(`Knowledge API URL: ${KNOWLEDGE_API_URL}`);
 
-// 认证中间件
-const authenticateToken = (req, res, next) => {
-  const authHeader = req.headers['authorization'];
-  const token = authHeader && authHeader.split(' ')[1];
-
-  if (!token) {
-    return res.status(401).json({ error: '访问令牌缺失' });
+async function createEmbedding(input, userId) {
+  const stored = await getStoredModelConfig(userId);
+  const baseUrl = stored?.embeddingModel ? stored.baseUrl : QWEN_BASE_URL;
+  const key = stored?.embeddingModel ? stored.apiKey : QWEN_API_KEY;
+  const model = stored?.embeddingModel || 'text-embedding-v3';
+  if (!key) {
+    throw new Error('请在“模型设置”中填写 Embedding Model，或由管理员配置 QWEN_API_KEY');
   }
-
-  jwt.verify(token, JWT_SECRET, (err, user) => {
-    if (err) {
-      return res.status(403).json({ error: '访问令牌无效' });
-    }
-    req.user = user;
-    next();
-  });
-};
-
-async function createEmbedding(input) {
-  const res = await fetch(`${QWEN_BASE_URL}/embeddings`, {
+  const res = await safeFetch(openAICompatibleEndpoint(baseUrl, 'embeddings'), {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      Authorization: `Bearer ${QWEN_API_KEY}`,
+      Authorization: `Bearer ${key}`,
     },
     body: JSON.stringify({
-      model: 'text-embedding-v3',
+      model,
       input,
     }),
-  });
+  }, modelRequestSecurityOptions(stored?.embeddingModel ? 'account' : 'qwen', baseUrl, 30_000));
   if (!res.ok) {
-    const text = await res.text();
+    const text = await readTextLimited(res, 64 * 1024);
     throw new Error(`Embeddings failed: ${res.status} ${text}`);
   }
-  const json = await res.json();
+  const json = JSON.parse(await readTextLimited(res, MAX_PROXY_RESPONSE_BYTES));
   // OpenAI-compatible response
   return json.data[0].embedding;
 }
@@ -201,8 +579,8 @@ app.post('/api/vector/upload', upload.single('file'), async (req, res) => {
     
     if (req.file) {
       // 限制文件大小
-      if (req.file.size > 50 * 1024 * 1024) { // 50MB限制
-        return res.status(400).json({ error: 'File too large. Maximum size is 50MB.' });
+      if (req.file.size > MAX_UPLOAD_BYTES) {
+        return res.status(400).json({ error: `File too large. Maximum size is ${MAX_UPLOAD_BYTES} bytes.` });
       }
       
       const filePath = path.resolve(req.file.path);
@@ -270,10 +648,10 @@ app.post('/api/vector/upload', upload.single('file'), async (req, res) => {
     }
     
     // 生成文件ID
-    const fileId = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    const fileId = randomUUID();
     
     // 插入文件信息
-    vectorDB.insertFile({
+    await vectorDB.insertFile(req.user.id, {
       id: fileId,
       filename: originalFilename,
       original_text: rawText,
@@ -289,11 +667,11 @@ app.post('/api/vector/upload', upload.single('file'), async (req, res) => {
     for (let i = 0; i < chunks.length; i++) {
       const chunk = chunks[i];
       try {
-        const embedding = await createEmbedding(chunk);
+        const embedding = await createEmbedding(chunk, req.user.id);
         const docId = `${fileId}-chunk-${i}`;
         
         // 插入到向量数据库
-        vectorDB.insertDocument({
+        await vectorDB.insertDocument(req.user.id, {
           id: docId,
           filename: originalFilename,
           original_text: rawText,
@@ -343,24 +721,24 @@ app.post('/api/vector/search', async (req, res) => {
       return res.status(400).json({ error: '查询内容不能为空' });
     }
     
-    const qEmbedding = await createEmbedding(query);
+    const qEmbedding = await createEmbedding(query, req.user.id);
     let results = [];
     let suggestions = [];
     
     try {
       switch (searchType) {
         case 'keyword':
-          results = enhancedSearch.keywordSearch(query, topK);
+          results = await enhancedSearch.keywordSearch(query, req.user.id, topK);
           break;
         case 'hybrid':
-          results = await enhancedSearch.hybridSearch(query, qEmbedding, {
+          results = await enhancedSearch.hybridSearch(query, qEmbedding, req.user.id, {
             topK,
             ...options
           });
           break;
         case 'vector':
         default:
-          results = await enhancedSearch.searchSimilar(qEmbedding, {
+          results = await enhancedSearch.searchSimilar(qEmbedding, req.user.id, {
             topK,
             threshold: options.threshold || 0.3,
             rerank: options.rerank !== false,
@@ -371,10 +749,10 @@ app.post('/api/vector/search', async (req, res) => {
       }
       
       // 生成搜索建议
-      suggestions = await enhancedSearch.suggestCorrections(query, results);
+      suggestions = await enhancedSearch.suggestCorrections(query, results, req.user.id);
       
       // 记录搜索历史
-      enhancedSearch.recordSearch(query, results);
+      enhancedSearch.recordSearch(req.user.id, query, results);
       
     } catch (searchError) {
       console.error('搜索错误:', searchError);
@@ -395,9 +773,9 @@ app.post('/api/vector/search', async (req, res) => {
 });
 
 // 获取所有文件列表
-app.get('/api/vector/files', (req, res) => {
+app.get('/api/vector/files', async (req, res) => {
   try {
-    const files = vectorDB.getAllFiles();
+    const files = await vectorDB.getAllFiles(req.user.id);
     res.json({ files });
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -405,9 +783,9 @@ app.get('/api/vector/files', (req, res) => {
 });
 
 // 获取所有文档列表
-app.get('/api/vector/documents', (req, res) => {
+app.get('/api/vector/documents', async (req, res) => {
   try {
-    const documents = vectorDB.getAllDocuments();
+    const documents = await vectorDB.getAllDocuments(req.user.id);
     res.json({ documents });
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -415,10 +793,10 @@ app.get('/api/vector/documents', (req, res) => {
 });
 
 // 根据文件名获取文档
-app.get('/api/vector/files/:filename', (req, res) => {
+app.get('/api/vector/files/:filename', async (req, res) => {
   try {
     const { filename } = req.params;
-    const documents = vectorDB.getDocumentsByFilename(filename);
+    const documents = await vectorDB.getDocumentsByFilename(req.user.id, filename);
     res.json({ documents });
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -426,10 +804,10 @@ app.get('/api/vector/files/:filename', (req, res) => {
 });
 
 // 删除文件
-app.delete('/api/vector/files/:filename', (req, res) => {
+app.delete('/api/vector/files/:filename', async (req, res) => {
   try {
     const { filename } = req.params;
-    const result = vectorDB.deleteFile(filename);
+    const result = await vectorDB.deleteFile(req.user.id, filename);
     res.json({ 
       ok: true, 
       filename,
@@ -442,10 +820,10 @@ app.delete('/api/vector/files/:filename', (req, res) => {
 });
 
 // 获取数据库统计信息
-app.get('/api/vector/stats', (req, res) => {
+app.get('/api/vector/stats', async (req, res) => {
   try {
-    const stats = vectorDB.getStats();
-    const searchStats = enhancedSearch.getSearchStats();
+    const stats = await vectorDB.getStats(req.user.id);
+    const searchStats = enhancedSearch.getSearchStats(req.user.id);
     res.json({ 
       stats,
       searchStats,
@@ -465,10 +843,8 @@ app.get('/api/vector/formats', (req, res) => {
         '.txt': '纯文本文件',
         '.md': 'Markdown文档',
         '.docx': 'Microsoft Word文档',
-        '.doc': 'Microsoft Word文档(旧版)',
         '.pdf': 'PDF文档',
         '.xlsx': 'Microsoft Excel表格',
-        '.xls': 'Microsoft Excel表格(旧版)',
         '.csv': 'CSV数据文件',
         '.json': 'JSON数据文件',
         '.xml': 'XML文档',
@@ -484,7 +860,7 @@ app.get('/api/vector/formats', (req, res) => {
 // 获取搜索历史和建议
 app.get('/api/vector/search-history', (req, res) => {
   try {
-    const searchStats = enhancedSearch.getSearchStats();
+    const searchStats = enhancedSearch.getSearchStats(req.user.id);
     res.json(searchStats);
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -532,26 +908,8 @@ app.post('/api/chat', async (req, res) => {
   try {
     const { messages, model = 'qwen-plus', temperature = 0.7, apiKey, apiUrl, provider = 'qwen', useKnowledgeBase = false } = req.body;
 
-    // 根据provider确定API配置
-    let key, baseUrl, endpoint;
-    
-    if (provider === 'local') {
-      // 本地模型不需要API Key
-      key = null;
-      baseUrl = apiUrl || LOCAL_MODEL_URL;
-      endpoint = `${baseUrl}`;
-    } else {
-      // 远程模型需要API Key
-      if (provider === 'openai') key = apiKey || OPENAI_API_KEY; 
-      else if (provider === 'openrouter') key = apiKey || OPENROUTER_API_KEY; 
-      else key = apiKey || QWEN_API_KEY;
-      baseUrl = apiUrl || (provider === 'openai' ? 'https://api.openai.com/v1' : provider === 'openrouter' ? 'https://openrouter.ai/api/v1' : QWEN_BASE_URL);
-      endpoint = `${baseUrl}/chat/completions`;
-    }
-
-    if (!key && provider !== 'local') {
-      throw new Error('API key is required for remote models');
-    }
+    const resolvedModel = await resolveChatModel(req.user.id, { provider, apiUrl, apiKey, model });
+    const { key, endpoint, isLocal, securityOptions } = resolvedModel;
 
     // 如果启用知识库，先搜索相关知识
     let knowledgeContext = '';
@@ -561,14 +919,14 @@ app.post('/api/chat', async (req, res) => {
         const userQuery = typeof lastMessage === 'string' ? lastMessage : lastMessage.content;
         
         // 从知识库搜索相关内容
-        const kbResponse = await fetch(`${KNOWLEDGE_API_URL}/api/knowledge-base/search`, {
+        const kbResponse = await safeFetch(`${KNOWLEDGE_API_URL}/api/knowledge-base/search`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ query: userQuery, top_k: 3 })
-        });
+        }, { allowPrivate: true, timeoutMs: 15_000 });
         
         if (kbResponse.ok) {
-          const kbData = await kbResponse.json();
+          const kbData = JSON.parse(await readTextLimited(kbResponse, MAX_PROXY_RESPONSE_BYTES));
           if (kbData.success && kbData.results && kbData.results.length > 0) {
             const contextParts = kbData.results.map((r, i) => `[知识${i + 1}] ${r.title}\n${r.content}`).join('\n\n');
             knowledgeContext = `\n\n以下是来自知识库的相关信息，请基于这些信息回答用户问题：\n\n${contextParts}\n\n`;
@@ -582,13 +940,16 @@ app.post('/api/chat', async (req, res) => {
     // 搜索聊天上下文（如果提供了workflowId）
     let chatContext = '';
     const workflowId = req.body.workflowId;
+    if (workflowId && !(await hasWorkflowAccess(req.user.id, workflowId))) {
+      return res.status(404).json({ error: '工作流不存在' });
+    }
     if (workflowId && messages.length > 0) {
       try {
         const lastMessage = messages[messages.length - 1];
         const userQuery = typeof lastMessage === 'string' ? lastMessage : lastMessage.content;
         
         // 从聊天记录搜索相关内容
-        const chatResponse = await fetch(`${KNOWLEDGE_API_URL}/api/knowledge-base/chat/search`, {
+        const chatResponse = await safeFetch(`${KNOWLEDGE_API_URL}/api/knowledge-base/chat/search`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ 
@@ -596,10 +957,10 @@ app.post('/api/chat', async (req, res) => {
             workflow_id: workflowId,
             top_k: 3 
           })
-        });
+        }, { allowPrivate: true, timeoutMs: 15_000 });
         
         if (chatResponse.ok) {
-          const chatData = await chatResponse.json();
+          const chatData = JSON.parse(await readTextLimited(chatResponse, MAX_PROXY_RESPONSE_BYTES));
           if (chatData.success && chatData.results && chatData.results.length > 0) {
             const contextParts = chatData.results.map((r, i) => 
               `[历史对话${i + 1}] 问题: ${r.question}\n回答: ${r.answer}`
@@ -648,24 +1009,24 @@ app.post('/api/chat', async (req, res) => {
       }
     }
 
-    const r = await fetch(endpoint, {
+    const r = await safeFetch(endpoint, {
       method: 'POST',
       headers,
       body: JSON.stringify({ 
-        model: provider === 'local' ? (model || 'local-model') : model, 
+        model: resolvedModel.model,
         messages: finalMessages, 
         temperature, 
         stream: false,
-        max_tokens: provider === 'local' ? 1000 : undefined // 为本地模型添加max_tokens
+        max_tokens: isLocal ? 1000 : undefined // 为本地模型添加max_tokens
       }),
-    });
+    }, securityOptions);
     
     if (!r.ok) {
-      const text = await r.text();
+      const text = await readTextLimited(r, 64 * 1024);
       throw new Error(`Chat failed: ${r.status} ${text}`);
     }
     
-    const json = await r.json();
+    const json = JSON.parse(await readTextLimited(r, MAX_PROXY_RESPONSE_BYTES));
     res.json(json);
   } catch (e) {
     console.error('Chat API error:', e);
@@ -681,101 +1042,95 @@ app.post('/api/http-request', async (req, res) => {
       headers = {}, 
       body, 
       variables = {}, 
-      auth = { type: 'none' },
       advanced = { timeout: 30000, retries: 0, followRedirects: true, validateSSL: true },
       authQueryParams = [],
       authBodyParams = []
     } = req.body;
-    
-    // Replace variables in URL
-    let formattedUrl = url;
-    for (const [key, value] of Object.entries(variables)) {
-      formattedUrl = formattedUrl.replace(new RegExp(`{${key}}`, 'g'), value);
+
+    if (typeof url !== 'string' || !url.trim()) {
+      return res.status(400).json({ error: '请求URL不能为空' });
     }
-    
+    const safeVariables = variables && typeof variables === 'object' && !Array.isArray(variables) ? variables : {};
+    const safeHeaders = headers && typeof headers === 'object' && !Array.isArray(headers) ? headers : {};
+    const advancedOptions = advanced && typeof advanced === 'object' ? advanced : {};
+    const queryParams = Array.isArray(authQueryParams) ? authQueryParams : [];
+    const bodyParams = Array.isArray(authBodyParams) ? authBodyParams : [];
+
+    // Replace literal placeholders without interpreting variable names as regular expressions.
+    let formattedUrl = substituteVariables(url, safeVariables);
+
     // Add auth query parameters to URL
-    if (authQueryParams.length > 0) {
+    if (queryParams.length > 0) {
       const urlObj = new URL(formattedUrl);
-      authQueryParams.forEach(param => {
-        urlObj.searchParams.append(param.key, param.value);
+      queryParams.forEach(param => {
+        if (param && typeof param.key === 'string') {
+          urlObj.searchParams.append(param.key, String(param.value ?? ''));
+        }
       });
       formattedUrl = urlObj.toString();
     }
-    
+
     // Replace variables in headers
     const formattedHeaders = {};
-    for (const [key, value] of Object.entries(headers)) {
-      let formattedValue = value;
-      for (const [varKey, varValue] of Object.entries(variables)) {
-        formattedValue = formattedValue.replace(new RegExp(`{${varKey}}`, 'g'), varValue);
-      }
-      formattedHeaders[key] = formattedValue;
+    for (const [key, value] of Object.entries(safeHeaders)) {
+      formattedHeaders[key] = substituteVariables(String(value), safeVariables);
     }
-    
+
     // Add custom User-Agent if specified
-    if (advanced.customUserAgent) {
-      formattedHeaders['User-Agent'] = advanced.customUserAgent;
+    if (advancedOptions.customUserAgent) {
+      formattedHeaders['User-Agent'] = String(advancedOptions.customUserAgent);
     }
-    
+
     // Replace variables in body
-    let formattedBody = body;
-    if (typeof body === 'string') {
-      for (const [key, value] of Object.entries(variables)) {
-        formattedBody = formattedBody.replace(new RegExp(`{${key}}`, 'g'), value);
-      }
-    } else if (typeof body === 'object' && body !== null) {
-      formattedBody = JSON.parse(JSON.stringify(body).replace(/\{(\w+)\}/g, (match, key) => {
-        return variables[key] || match;
-      }));
-    }
-    
+    let formattedBody = substituteVariables(body, safeVariables);
+
     // Add auth body parameters
-    if (authBodyParams.length > 0) {
+    if (bodyParams.length > 0) {
       if (typeof formattedBody === 'string') {
         try {
           const bodyObj = JSON.parse(formattedBody);
-          authBodyParams.forEach(param => {
-            bodyObj[param.key] = param.value;
+          bodyParams.forEach(param => {
+            if (param && typeof param.key === 'string') bodyObj[param.key] = param.value;
           });
           formattedBody = JSON.stringify(bodyObj);
         } catch (e) {
           // If body is not JSON, append as form data
           const formData = new URLSearchParams();
-          authBodyParams.forEach(param => {
-            formData.append(param.key, param.value);
+          bodyParams.forEach(param => {
+            if (param && typeof param.key === 'string') {
+              formData.append(param.key, String(param.value ?? ''));
+            }
           });
           formattedBody = formData.toString();
           formattedHeaders['Content-Type'] = 'application/x-www-form-urlencoded';
         }
-      } else if (typeof formattedBody === 'object') {
-        authBodyParams.forEach(param => {
-          formattedBody[param.key] = param.value;
+      } else if (formattedBody && typeof formattedBody === 'object') {
+        bodyParams.forEach(param => {
+          if (param && typeof param.key === 'string') formattedBody[param.key] = param.value;
         });
       }
     }
 
-    const fetch = (await import('node-fetch')).default;
     const upperMethod = String(method || 'GET').toUpperCase();
+    const allowedMethods = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS']);
+    if (!allowedMethods.has(upperMethod)) {
+      return res.status(400).json({ error: '不支持的HTTP方法' });
+    }
+    if (advancedOptions.validateSSL === false) {
+      return res.status(400).json({ error: '不允许关闭TLS证书验证' });
+    }
 
-    const options = { 
+    const forbiddenHeaders = new Set([
+      'host', 'content-length', 'connection', 'transfer-encoding', 'upgrade', 'proxy-authorization'
+    ]);
+    for (const key of Object.keys(formattedHeaders)) {
+      if (forbiddenHeaders.has(key.toLowerCase())) delete formattedHeaders[key];
+    }
+
+    const options = {
       method: upperMethod, 
       headers: formattedHeaders,
-      timeout: advanced.timeout || 30000
     };
-    
-    // Handle redirects
-    if (advanced.followRedirects !== false) {
-      options.redirect = 'follow';
-    } else {
-      options.redirect = 'manual';
-    }
-    
-    // Handle SSL validation
-    if (advanced.validateSSL === false) {
-      // Note: In production, you might want to use a proper SSL configuration
-      // This is a simplified approach for development/testing
-      process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
-    }
     
     if (upperMethod !== 'GET' && upperMethod !== 'HEAD' && formattedBody) {
       options.body = typeof formattedBody === 'object' ? JSON.stringify(formattedBody) : formattedBody;
@@ -785,31 +1140,40 @@ app.post('/api/http-request', async (req, res) => {
     }
 
     // Retry logic
+    const retries = Math.max(0, Math.min(Number(advancedOptions.retries) || 0, 3));
+    const timeoutMs = Math.max(1_000, Math.min(Number(advancedOptions.timeout) || 30_000, 60_000));
     let lastError;
-    for (let attempt = 0; attempt <= (advanced.retries || 0); attempt++) {
+    for (let attempt = 0; attempt <= retries; attempt++) {
       try {
-    const response = await fetch(formattedUrl, options);
-    
-    const content = await response.text();
-    let json = null;
-    try {
-      json = JSON.parse(content);
-    } catch (e) {
-      // Not JSON
-    }
-    
-    res.json({
-      status_code: response.status,
-      headers: Object.fromEntries(response.headers.entries()),
-      content,
-      json,
+        const response = await safeFetch(formattedUrl, options, {
+          allowPrivate: ALLOW_PRIVATE_NETWORK_REQUESTS,
+          maxRedirects: advancedOptions.followRedirects === false ? 0 : 3,
+          timeoutMs,
+        });
+
+        const content = await readTextLimited(response, MAX_PROXY_RESPONSE_BYTES);
+        let json = null;
+        try {
+          json = JSON.parse(content);
+        } catch {
+          // Non-JSON responses are returned as text.
+        }
+
+        const responseHeaders = Object.fromEntries(
+          [...response.headers.entries()].filter(([key]) => key.toLowerCase() !== 'set-cookie')
+        );
+        res.json({
+          status_code: response.status,
+          headers: responseHeaders,
+          content,
+          json,
           success: response.ok,
           attempt: attempt + 1
         });
         return;
       } catch (error) {
         lastError = error;
-        if (attempt < (advanced.retries || 0)) {
+        if (attempt < retries) {
           // Wait before retry (exponential backoff)
           await new Promise(resolve => setTimeout(resolve, Math.pow(2, attempt) * 1000));
         }
@@ -831,8 +1195,6 @@ app.post('/api/oauth2/token', async (req, res) => {
       return res.status(400).json({ error: 'Missing required OAuth2 parameters' });
     }
     
-    const fetch = (await import('node-fetch')).default;
-    
     // Prepare token request body
     const tokenBody = new URLSearchParams();
     tokenBody.append('grant_type', grantType);
@@ -843,21 +1205,26 @@ app.post('/api/oauth2/token', async (req, res) => {
       tokenBody.append('scope', scope);
     }
     
-    const response = await fetch(tokenUrl, {
+    const response = await safeFetch(tokenUrl, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/x-www-form-urlencoded',
         'Accept': 'application/json'
       },
       body: tokenBody.toString()
+    }, {
+      allowPrivate: ALLOW_PRIVATE_NETWORK_REQUESTS,
+      maxRedirects: 0,
+      timeoutMs: 15_000,
     });
     
     if (!response.ok) {
-      const errorText = await response.text();
+      const errorText = await readTextLimited(response, 64 * 1024);
       throw new Error(`OAuth2 token request failed: ${response.status} ${errorText}`);
     }
     
-    const tokenData = await response.json();
+    const tokenText = await readTextLimited(response, 256 * 1024);
+    const tokenData = JSON.parse(tokenText);
     res.json(tokenData);
   } catch (e) {
     console.error('OAuth2 token error:', e);
@@ -874,58 +1241,8 @@ app.post('/api/analysis', async (req, res) => {
       { role: 'user', content: `${question}` }
     ]
 
-    // 根据provider确定API配置
-    let key, baseUrl, endpoint;
-    
-    if (provider === 'local') {
-      // 本地模型不需要API Key
-      key = null;
-      baseUrl = apiUrl || LOCAL_MODEL_URL;
-      endpoint = `${baseUrl}`;
-    } else {
-      // 远程模型需要API Key
-      if (provider === 'openai') key = apiKey || OPENAI_API_KEY; 
-      else if (provider === 'openrouter') key = apiKey || OPENROUTER_API_KEY; 
-      else key = apiKey || QWEN_API_KEY;
-      baseUrl = apiUrl || (provider === 'openai' ? 'https://api.openai.com/v1' : provider === 'openrouter' ? 'https://openrouter.ai/api/v1' : QWEN_BASE_URL);
-      endpoint = `${baseUrl}/chat/completions`;
-    }
-
-    if (!key && provider !== 'local') {
-      throw new Error('API key is required for remote models');
-    }
-
-    // 搜索聊天上下文（如果提供了workflowId）
-    let chatContext = '';
-    if (workflowId && messages.length > 0) {
-      try {
-        const lastMessage = messages[messages.length - 1];
-        const userQuery = typeof lastMessage === 'string' ? lastMessage : lastMessage.content;
-        
-        // 从聊天记录搜索相关内容
-        const chatResponse = await fetch(`${KNOWLEDGE_API_URL}/api/knowledge-base/chat/search`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ 
-            query: userQuery, 
-            workflow_id: workflowId,
-            top_k: 3 
-          })
-        });
-        
-        if (chatResponse.ok) {
-          const chatData = await chatResponse.json();
-          if (chatData.success && chatData.results && chatData.results.length > 0) {
-            const contextParts = chatData.results.map((r, i) => 
-              `[历史对话${i + 1}] 问题: ${r.question}\n回答: ${r.answer}`
-            ).join('\n\n');
-            chatContext = `\n\n以下是相关的历史对话记录，请参考这些上下文来回答用户问题：\n\n${contextParts}\n\n`;
-          }
-        }
-      } catch (chatError) {
-        console.warn('聊天上下文搜索失败，继续使用基础对话:', chatError.message);
-      }
-    }
+    const resolvedModel = await resolveChatModel(req.user.id, { provider, apiUrl, apiKey, model });
+    const { key, endpoint, isLocal, securityOptions } = resolvedModel;
 
     // 构建请求头
     const headers = {
@@ -937,24 +1254,24 @@ app.post('/api/analysis', async (req, res) => {
       headers['Authorization'] = `Bearer ${key}`;
     }
 
-        const r = await fetch(endpoint, {
+        const r = await safeFetch(endpoint, {
           method: 'POST',
           headers,
           body: JSON.stringify({
-        model: provider === 'local' ? (model || 'local-model') : model, 
+        model: resolvedModel.model,
             messages,
         temperature: temperature || 0.2, 
         stream: false,
-        max_tokens: provider === 'local' ? 1000 : undefined // 为本地模型添加max_tokens
+        max_tokens: isLocal ? 1000 : undefined // 为本地模型添加max_tokens
       }),
-    });
+    }, securityOptions);
     
     if (!r.ok) {
-      const text = await r.text();
+      const text = await readTextLimited(r, 64 * 1024);
       throw new Error(`Analysis failed: ${r.status} ${text}`);
     }
     
-    const json = await r.json();
+    const json = JSON.parse(await readTextLimited(r, MAX_PROXY_RESPONSE_BYTES));
     res.json({ text: json?.choices?.[0]?.message?.content || '分析完成' });
   } catch (e) {
     console.error('Analysis API error:', e);
@@ -971,38 +1288,25 @@ app.post('/api/analysis-stream', async (req, res) => {
       { role: 'user', content: `${question}` }
     ];
 
-    let key, baseUrl, endpoint;
-    if (provider === 'local') {
-      key = null;
-      baseUrl = apiUrl || LOCAL_MODEL_URL;
-      endpoint = `${baseUrl}`;
-    } else {
-      if (provider === 'openai') key = apiKey || OPENAI_API_KEY; 
-      else if (provider === 'openrouter') key = apiKey || OPENROUTER_API_KEY; 
-      else key = apiKey || QWEN_API_KEY;
-      baseUrl = apiUrl || (provider === 'openai' ? 'https://api.openai.com/v1' : provider === 'openrouter' ? 'https://openrouter.ai/api/v1' : QWEN_BASE_URL);
-      endpoint = `${baseUrl}/chat/completions`;
-    }
-    if (!key && provider !== 'local') {
-      throw new Error('API key is required for remote models');
-    }
+    const resolvedModel = await resolveChatModel(req.user.id, { provider, apiUrl, apiKey, model });
+    const { key, endpoint, securityOptions } = resolvedModel;
 
     const headers = { 'Content-Type': 'application/json' };
     if (key) headers['Authorization'] = `Bearer ${key}`;
 
-    const upstream = await fetch(endpoint, {
+    const upstream = await safeFetch(endpoint, {
           method: 'POST',
           headers,
           body: JSON.stringify({
-        model: provider === 'local' ? (model || 'local-model') : model,
+        model: resolvedModel.model,
         messages,
         temperature: temperature || 0.2,
         stream: true,
       }),
-    });
+    }, securityOptions);
 
     if (!upstream.ok || !upstream.body) {
-      const text = await upstream.text().catch(() => '');
+      const text = await readTextLimited(upstream, 64 * 1024).catch(() => '');
       throw new Error(`Upstream failed: ${upstream.status} ${text}`);
     }
 
@@ -1010,30 +1314,29 @@ app.post('/api/analysis-stream', async (req, res) => {
     res.setHeader('Cache-Control', 'no-cache');
     res.setHeader('Connection', 'keep-alive');
 
-    upstream.body.on('data', chunk => res.write(chunk));
-    upstream.body.on('end', () => res.end());
-    upstream.body.on('error', () => res.end());
+    res.once('close', () => upstream.body.destroy());
+    upstream.body.once('error', () => {
+      if (!res.writableEnded) res.end();
+    });
+    upstream.body.pipe(res);
   } catch (e) {
     try {
-      res.status(500).end(`data: {"error":"${String(e.message || e)}"}\n\n`);
+      res.status(500).end(`data: ${JSON.stringify({ error: String(e.message || e) })}\n\n`);
     } catch {}
   }
 });
 
 // 文件上传API - 支持Excel和CSV文件解析
 app.post('/api/upload-data', upload.single('file'), async (req, res) => {
-  console.log('📁 收到文件上传请求:', req.file);
   try {
     if (!req.file) {
-      console.log('❌ 没有上传文件');
       return res.status(400).json({ error: '没有上传文件' });
     }
 
     const filePath = req.file.path;
     const originalName = req.file.originalname;
     const fileExtension = path.extname(originalName).toLowerCase();
-    console.log('📄 文件信息:', { filePath, originalName, fileExtension });
-    
+
     let data = [];
     let headers = [];
 
@@ -1053,21 +1356,34 @@ app.post('/api/upload-data', upload.single('file'), async (req, res) => {
           headers = Object.keys(results[0]);
           data = results.map(row => headers.map(header => row[header] || ''));
         }
-      } else if (fileExtension === '.xlsx' || fileExtension === '.xls') {
-        // 解析Excel文件
-        const workbook = XLSX.readFile(filePath);
-        const sheetName = workbook.SheetNames[0];
-        const worksheet = workbook.Sheets[sheetName];
-        
-        // 转换为JSON数组
-        const jsonData = XLSX.utils.sheet_to_json(worksheet, { header: 1 });
-        
-        if (jsonData.length > 0) {
-          headers = jsonData[0];
-          data = jsonData.slice(1);
+      } else if (fileExtension === '.xlsx') {
+        const workbook = new ExcelJS.Workbook();
+        await workbook.xlsx.readFile(filePath);
+        const worksheet = workbook.worksheets[0];
+        if (!worksheet) throw new Error('Excel工作簿不包含工作表');
+
+        const rows = [];
+        worksheet.eachRow({ includeEmpty: false }, row => {
+          rows.push(row.values.slice(1).map(value => {
+            if (value === null || value === undefined) return '';
+            if (value instanceof Date) return value.toISOString();
+            if (typeof value === 'object') {
+              if ('text' in value) return String(value.text);
+              if ('result' in value) return String(value.result ?? '');
+              if ('richText' in value) return value.richText.map(item => item.text).join('');
+              return JSON.stringify(value);
+            }
+            return String(value);
+          }));
+        });
+
+        if (rows.length > 0) {
+          headers = rows[0].map(String);
+          data = rows.slice(1);
         }
       } else {
-        return res.status(400).json({ error: '不支持的文件格式，请上传CSV或Excel文件' });
+        fs.unlinkSync(filePath);
+        return res.status(400).json({ error: '不支持的文件格式，请上传CSV或XLSX文件' });
       }
 
       // 清理临时文件
@@ -1128,24 +1444,8 @@ ${JSON.stringify(data, null, 2)}
       }
     ];
 
-    // 根据provider确定API配置
-    let key, baseUrl, endpoint;
-    
-    if (provider === 'local') {
-      key = null;
-      baseUrl = apiUrl || LOCAL_MODEL_URL;
-      endpoint = `${baseUrl}`;
-    } else {
-      if (provider === 'openai') key = apiKey || OPENAI_API_KEY; 
-      else if (provider === 'openrouter') key = apiKey || OPENROUTER_API_KEY; 
-      else key = apiKey || QWEN_API_KEY;
-      baseUrl = apiUrl || (provider === 'openai' ? 'https://api.openai.com/v1' : provider === 'openrouter' ? 'https://openrouter.ai/api/v1' : QWEN_BASE_URL);
-      endpoint = `${baseUrl}/chat/completions`;
-    }
-
-    if (!key && provider !== 'local') {
-      throw new Error('API key is required for remote models');
-    }
+    const resolvedModel = await resolveChatModel(req.user.id, { provider, apiUrl, apiKey, model });
+    const { key, endpoint, securityOptions } = resolvedModel;
 
     const headers_req = {
       'Content-Type': 'application/json',
@@ -1155,19 +1455,19 @@ ${JSON.stringify(data, null, 2)}
       headers_req['Authorization'] = `Bearer ${key}`;
     }
 
-    const r = await fetch(endpoint, {
+    const r = await safeFetch(endpoint, {
       method: 'POST',
       headers: headers_req,
       body: JSON.stringify({
-        model: provider === 'local' ? (model || 'local-model') : model,
+        model: resolvedModel.model,
         messages,
         temperature: temperature || 0.2,
         stream: true,
       }),
-    });
+    }, securityOptions);
 
     if (!r.ok || !r.body) {
-      const text = await r.text().catch(() => '');
+      const text = await readTextLimited(r, 64 * 1024).catch(() => '');
       throw new Error(`API请求失败: ${r.status} ${text}`);
     }
 
@@ -1189,22 +1489,12 @@ ${JSON.stringify(data, null, 2)}
 app.post('/api/chat-stream', async (req, res) => {
   try {
     const { messages, model = 'qwen-plus', temperature = 0.7, apiKey, apiUrl, provider = 'qwen', workflowId } = req.body;
+    if (workflowId && !(await hasWorkflowAccess(req.user.id, workflowId))) {
+      return res.status(404).json({ error: '工作流不存在' });
+    }
 
-    let key, baseUrl, endpoint;
-    if (provider === 'local') {
-      key = null;
-      baseUrl = apiUrl || LOCAL_MODEL_URL;
-      endpoint = `${baseUrl}`;
-    } else {
-      if (provider === 'openai') key = apiKey || OPENAI_API_KEY; 
-      else if (provider === 'openrouter') key = apiKey || OPENROUTER_API_KEY; 
-      else key = apiKey || QWEN_API_KEY;
-      baseUrl = apiUrl || (provider === 'openai' ? 'https://api.openai.com/v1' : provider === 'openrouter' ? 'https://openrouter.ai/api/v1' : QWEN_BASE_URL);
-      endpoint = `${baseUrl}/chat/completions`;
-    }
-    if (!key && provider !== 'local') {
-      throw new Error('API key is required for remote models');
-    }
+    const resolvedModel = await resolveChatModel(req.user.id, { provider, apiUrl, apiKey, model });
+    const { key, endpoint, securityOptions } = resolvedModel;
 
     // 搜索聊天上下文（如果提供了workflowId）
     let chatContext = '';
@@ -1214,7 +1504,7 @@ app.post('/api/chat-stream', async (req, res) => {
         const userQuery = typeof lastMessage === 'string' ? lastMessage : lastMessage.content;
         
         // 从聊天记录搜索相关内容
-        const chatResponse = await fetch(`${KNOWLEDGE_API_URL}/api/knowledge-base/chat/search`, {
+        const chatResponse = await safeFetch(`${KNOWLEDGE_API_URL}/api/knowledge-base/chat/search`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ 
@@ -1222,10 +1512,10 @@ app.post('/api/chat-stream', async (req, res) => {
             workflow_id: workflowId,
             top_k: 3 
           })
-        });
+        }, { allowPrivate: true, timeoutMs: 15_000 });
         
         if (chatResponse.ok) {
-          const chatData = await chatResponse.json();
+          const chatData = JSON.parse(await readTextLimited(chatResponse, MAX_PROXY_RESPONSE_BYTES));
           if (chatData.success && chatData.results && chatData.results.length > 0) {
             const contextParts = chatData.results.map((r, i) => 
               `[历史对话${i + 1}] 问题: ${r.question}\n回答: ${r.answer}`
@@ -1255,19 +1545,19 @@ app.post('/api/chat-stream', async (req, res) => {
     const headers = { 'Content-Type': 'application/json' };
     if (key) headers['Authorization'] = `Bearer ${key}`;
 
-    const upstream = await fetch(endpoint, {
+    const upstream = await safeFetch(endpoint, {
       method: 'POST',
       headers,
       body: JSON.stringify({
-        model: provider === 'local' ? (model || 'local-model') : model,
+        model: resolvedModel.model,
         messages: finalMessages,
         temperature,
         stream: true,
       }),
-    });
+    }, securityOptions);
 
     if (!upstream.ok || !upstream.body) {
-      const text = await upstream.text().catch(() => '');
+      const text = await readTextLimited(upstream, 64 * 1024).catch(() => '');
       throw new Error(`Upstream failed: ${upstream.status} ${text}`);
     }
 
@@ -1275,23 +1565,41 @@ app.post('/api/chat-stream', async (req, res) => {
     res.setHeader('Cache-Control', 'no-cache');
     res.setHeader('Connection', 'keep-alive');
 
-    upstream.body.on('data', chunk => res.write(chunk));
-    upstream.body.on('end', () => res.end());
-    upstream.body.on('error', () => res.end());
+    res.once('close', () => upstream.body.destroy());
+    upstream.body.once('error', () => {
+      if (!res.writableEnded) res.end();
+    });
+    upstream.body.pipe(res);
   } catch (e) {
     try {
-      res.status(500).end(`data: {"error":"${String(e.message || e)}"}\n\n`);
+      res.status(500).end(`data: ${JSON.stringify({ error: String(e.message || e) })}\n\n`);
     } catch {}
   }
 });
 
 // 认证相关API
-app.post('/api/auth/register', async (req, res) => {
+app.get('/api/auth/config', (_req, res) => {
+  res.setHeader('Cache-Control', 'no-store');
+  res.json({ registrationEnabled: ALLOW_REGISTRATION });
+});
+
+app.post('/api/auth/register', authRateLimiter, async (req, res) => {
   try {
-    const { username, email, password } = req.body;
+    if (!ALLOW_REGISTRATION) {
+      return res.status(403).json({ error: '当前实例未开放注册' });
+    }
+    const username = String(req.body.username || '').trim();
+    const email = String(req.body.email || '').trim().toLowerCase();
+    const password = String(req.body.password || '');
     
-    if (!username || !email || !password) {
-      return res.status(400).json({ error: '用户名、邮箱和密码都是必需的' });
+    if (!/^[\p{L}\p{N}_.-]{3,32}$/u.test(username)) {
+      return res.status(400).json({ error: '用户名需为3至32个字母、数字或 _.- 字符' });
+    }
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || email.length > 254) {
+      return res.status(400).json({ error: '邮箱格式无效' });
+    }
+    if (password.length < 12 || password.length > 128) {
+      return res.status(400).json({ error: '密码长度需为12至128个字符' });
     }
 
     // 检查用户是否已存在
@@ -1301,32 +1609,28 @@ app.post('/api/auth/register', async (req, res) => {
     }
 
     // 加密密码
-    const passwordHash = await bcrypt.hash(password, 10);
+    const passwordHash = await bcrypt.hash(password, BCRYPT_ROUNDS);
     
     // 创建用户
     const user = await vectorDB.createUser(username, email, passwordHash);
     
-    // 生成JWT令牌
-    const token = jwt.sign(
-      { id: user.id, username: user.username, email: user.email },
-      JWT_SECRET,
-      { expiresIn: '7d' }
-    );
+    const token = issueSession(res, user);
 
     res.json({ 
       message: '注册成功', 
-      token, 
-      user: { id: user.id, username: user.username, email: user.email }
+      ...(EXPOSE_AUTH_TOKEN ? { token } : {}),
+      user: publicUser(user)
     });
   } catch (error) {
     console.error('注册错误:', error);
-    res.status(500).json({ error: error.message || '注册失败' });
+    res.status(500).json({ error: '注册失败' });
   }
 });
 
-app.post('/api/auth/login', async (req, res) => {
+app.post('/api/auth/login', authRateLimiter, loginAccountRateLimiter, async (req, res) => {
   try {
-    const { username, password } = req.body;
+    const username = String(req.body.username || '').trim();
+    const password = String(req.body.password || '');
     
     if (!username || !password) {
       return res.status(400).json({ error: '用户名和密码都是必需的' });
@@ -1334,27 +1638,18 @@ app.post('/api/auth/login', async (req, res) => {
 
     // 查找用户
     const user = await vectorDB.getUserByUsername(username);
-    if (!user) {
+    // 即使用户不存在也执行密码比较，减少基于响应时间的用户名枚举。
+    const isValidPassword = await bcrypt.compare(password, user?.password_hash || DUMMY_PASSWORD_HASH);
+    if (!user || !isValidPassword) {
       return res.status(401).json({ error: '用户名或密码错误' });
     }
 
-    // 验证密码
-    const isValidPassword = await bcrypt.compare(password, user.password_hash);
-    if (!isValidPassword) {
-      return res.status(401).json({ error: '用户名或密码错误' });
-    }
-
-    // 生成JWT令牌
-    const token = jwt.sign(
-      { id: user.id, username: user.username, email: user.email },
-      JWT_SECRET,
-      { expiresIn: '7d' }
-    );
+    const token = issueSession(res, user);
 
     res.json({ 
       message: '登录成功', 
-      token, 
-      user: { id: user.id, username: user.username, email: user.email }
+      ...(EXPOSE_AUTH_TOKEN ? { token } : {}),
+      user: publicUser(user)
     });
   } catch (error) {
     console.error('登录错误:', error);
@@ -1362,8 +1657,20 @@ app.post('/api/auth/login', async (req, res) => {
   }
 });
 
+app.get('/api/auth/me', (req, res) => {
+  res.setHeader('Cache-Control', 'no-store');
+  res.json({ user: publicUser(req.user) });
+});
+
+app.post('/api/auth/logout', (req, res) => {
+  const { maxAge: _maxAge, ...clearOptions } = sessionCookieOptions();
+  res.clearCookie(SESSION_COOKIE_NAME, clearOptions);
+  res.setHeader('Cache-Control', 'no-store');
+  res.json({ message: '已退出登录' });
+});
+
 // 工作流管理API
-app.get('/api/workflows', authenticateToken, async (req, res) => {
+app.get('/api/workflows', async (req, res) => {
   try {
     const workflows = await vectorDB.getWorkflows(req.user.id);
     res.json({ workflows });
@@ -1373,12 +1680,15 @@ app.get('/api/workflows', authenticateToken, async (req, res) => {
   }
 });
 
-app.post('/api/workflows', authenticateToken, async (req, res) => {
+app.post('/api/workflows', async (req, res) => {
   try {
     const { name, nodes, edges } = req.body;
-    const workflowId = `workflow_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-    
-    const workflow = await vectorDB.saveWorkflow(req.user.id, workflowId, name, nodes, edges);
+    if (typeof name !== 'string' || !name.trim() || name.length > 120 || !Array.isArray(nodes) || !Array.isArray(edges)) {
+      return res.status(400).json({ error: '工作流数据无效' });
+    }
+    const workflowId = `workflow_${randomUUID()}`;
+    const sanitizedNodes = sanitizeWorkflowNodes(nodes);
+    const workflow = await vectorDB.createWorkflow(req.user.id, workflowId, name.trim(), sanitizedNodes, edges);
     res.json({ message: '工作流保存成功', workflow });
   } catch (error) {
     console.error('保存工作流错误:', error);
@@ -1386,12 +1696,16 @@ app.post('/api/workflows', authenticateToken, async (req, res) => {
   }
 });
 
-app.put('/api/workflows/:id', authenticateToken, async (req, res) => {
+app.put('/api/workflows/:id', async (req, res) => {
   try {
     const { id } = req.params;
     const { name, nodes, edges } = req.body;
-    
-    const workflow = await vectorDB.saveWorkflow(req.user.id, id, name, nodes, edges);
+    if (typeof name !== 'string' || !name.trim() || name.length > 120 || !Array.isArray(nodes) || !Array.isArray(edges)) {
+      return res.status(400).json({ error: '工作流数据无效' });
+    }
+    const sanitizedNodes = sanitizeWorkflowNodes(nodes);
+    const workflow = await vectorDB.updateWorkflow(req.user.id, id, name.trim(), sanitizedNodes, edges);
+    if (!workflow) return res.status(404).json({ error: '工作流不存在' });
     res.json({ message: '工作流更新成功', workflow });
   } catch (error) {
     console.error('更新工作流错误:', error);
@@ -1399,7 +1713,7 @@ app.put('/api/workflows/:id', authenticateToken, async (req, res) => {
   }
 });
 
-app.get('/api/workflows/:id', authenticateToken, async (req, res) => {
+app.get('/api/workflows/:id', async (req, res) => {
   try {
     const { id } = req.params;
     const workflow = await vectorDB.getWorkflow(req.user.id, id);
@@ -1415,7 +1729,7 @@ app.get('/api/workflows/:id', authenticateToken, async (req, res) => {
   }
 });
 
-app.delete('/api/workflows/:id', authenticateToken, async (req, res) => {
+app.delete('/api/workflows/:id', async (req, res) => {
   try {
     const { id } = req.params;
     const success = await vectorDB.deleteWorkflow(req.user.id, id);
@@ -1431,7 +1745,330 @@ app.delete('/api/workflows/:id', authenticateToken, async (req, res) => {
   }
 });
 
-app.get('/api/health', (_, res) => res.json({ ok: true }));
+// ==================== Local Runtime 与运行追踪 ====================
+
+app.get('/api/runtime/devices', async (req, res) => {
+  try {
+    const devices = await vectorDB.getRuntimeDevices(req.user.id);
+    res.setHeader('Cache-Control', 'no-store');
+    res.json({ devices: devices.map(runtimeDeviceView) });
+  } catch (error) {
+    console.error('获取 Runtime 设备失败:', error.message);
+    res.status(500).json({ error: '获取 Runtime 设备失败' });
+  }
+});
+
+app.post('/api/runtime/devices', async (req, res) => {
+  try {
+    const name = String(req.body?.name || '').trim();
+    if (!name || name.length > 80) return res.status(400).json({ error: '设备名称应为 1-80 个字符' });
+    const token = `nfr_${randomBytes(32).toString('base64url')}`;
+    const device = await vectorDB.createRuntimeDevice(req.user.id, {
+      id: `device_${randomUUID()}`,
+      name,
+      tokenHash: hashRuntimeToken(token),
+    });
+    res.setHeader('Cache-Control', 'no-store');
+    res.status(201).json({
+      device: runtimeDeviceView(device),
+      token,
+      warning: '设备令牌只显示这一次，请立即保存到本机环境变量。',
+    });
+  } catch (error) {
+    console.error('创建设备配对失败:', error.message);
+    res.status(500).json({ error: '创建设备配对失败' });
+  }
+});
+
+app.delete('/api/runtime/devices/:id', async (req, res) => {
+  try {
+    const revoked = await vectorDB.revokeRuntimeDevice(req.user.id, req.params.id);
+    if (!revoked) return res.status(404).json({ error: '设备不存在或已经撤销' });
+    res.json({ message: '设备访问已撤销' });
+  } catch (error) {
+    console.error('撤销 Runtime 设备失败:', error.message);
+    res.status(500).json({ error: '撤销 Runtime 设备失败' });
+  }
+});
+
+app.post('/api/runtime/runs', async (req, res) => {
+  try {
+    const workflowId = String(req.body?.workflowId || '');
+    const deviceId = String(req.body?.deviceId || '');
+    const workflow = await vectorDB.getWorkflow(req.user.id, workflowId);
+    if (!workflow) return res.status(404).json({ error: '工作流不存在' });
+    const device = await vectorDB.getRuntimeDevice(req.user.id, deviceId);
+    if (!device || device.revoked_at) return res.status(404).json({ error: 'Runtime 设备不存在或已撤销' });
+    const input = boundedRuntimeValue(req.body?.input ?? { query: '' }, '运行输入');
+    const run = await vectorDB.createWorkflowRun(req.user.id, {
+      id: `run_${randomUUID()}`,
+      workflowId,
+      deviceId,
+      triggerSource: 'manual',
+      input,
+      workflowSnapshot: {
+        id: workflow.id,
+        name: workflow.name,
+        nodes: sanitizeWorkflowNodes(workflow.nodes),
+        edges: workflow.edges,
+      },
+    });
+    res.status(201).json({ run });
+  } catch (error) {
+    if (/JSON|64KB|可序列化/.test(error.message)) return res.status(400).json({ error: error.message });
+    console.error('创建 Runtime 运行失败:', error.message);
+    res.status(500).json({ error: '创建 Runtime 运行失败' });
+  }
+});
+
+app.get('/api/runtime/runs', async (req, res) => {
+  try {
+    const requestedLimit = Number(req.query.limit) || 50;
+    const runs = await vectorDB.getWorkflowRuns(req.user.id, Math.max(1, Math.min(requestedLimit, 100)));
+    res.setHeader('Cache-Control', 'no-store');
+    res.json({ runs });
+  } catch (error) {
+    console.error('获取运行记录失败:', error.message);
+    res.status(500).json({ error: '获取运行记录失败' });
+  }
+});
+
+app.get('/api/runtime/runs/:id', async (req, res) => {
+  try {
+    const run = await vectorDB.getWorkflowRunWithSteps(req.user.id, req.params.id);
+    if (!run) return res.status(404).json({ error: '运行记录不存在' });
+    res.setHeader('Cache-Control', 'no-store');
+    res.json({ run });
+  } catch (error) {
+    console.error('获取运行详情失败:', error.message);
+    res.status(500).json({ error: '获取运行详情失败' });
+  }
+});
+
+app.post('/api/runtime/runs/:id/cancel', async (req, res) => {
+  try {
+    const cancelled = await vectorDB.cancelWorkflowRun(req.user.id, req.params.id);
+    if (!cancelled) return res.status(409).json({ error: '该运行无法取消' });
+    res.json({ message: '运行已取消' });
+  } catch (error) {
+    console.error('取消运行失败:', error.message);
+    res.status(500).json({ error: '取消运行失败' });
+  }
+});
+
+app.get('/api/runtime/permissions', async (req, res) => {
+  try {
+    const [requests, grants] = await Promise.all([
+      vectorDB.getRuntimePermissionRequests(req.user.id, 100),
+      vectorDB.getRuntimePermissionGrants(req.user.id),
+    ]);
+    res.setHeader('Cache-Control', 'no-store');
+    res.json({ requests, grants });
+  } catch (error) {
+    console.error('获取 Runtime 权限中心失败:', error.message);
+    res.status(500).json({ error: '获取权限中心失败' });
+  }
+});
+
+app.post('/api/runtime/permissions/:id/resolve', async (req, res) => {
+  try {
+    const decision = String(req.body?.decision || '');
+    if (!new Set(['allow_once', 'allow_always', 'deny']).has(decision)) {
+      return res.status(400).json({ error: '审批决定无效' });
+    }
+    const request = await vectorDB.resolveRuntimePermissionRequest(req.user.id, req.params.id, decision);
+    if (!request) return res.status(409).json({ error: '审批请求不存在或已经处理' });
+    res.json({ request });
+  } catch (error) {
+    console.error('处理 Runtime 权限申请失败:', error.message);
+    res.status(500).json({ error: '处理权限申请失败' });
+  }
+});
+
+app.delete('/api/runtime/permissions/grants/:id', async (req, res) => {
+  try {
+    const revoked = await vectorDB.revokeRuntimePermissionGrant(req.user.id, req.params.id);
+    if (!revoked) return res.status(404).json({ error: '持续授权不存在' });
+    res.json({ message: '持续授权已撤销' });
+  } catch (error) {
+    console.error('撤销 Runtime 持续授权失败:', error.message);
+    res.status(500).json({ error: '撤销持续授权失败' });
+  }
+});
+
+app.post('/api/runtime/agent/heartbeat', authenticateRuntimeDevice, async (req, res) => {
+  try {
+    const capabilities = normalizeRuntimeCapabilities(req.body?.capabilities);
+    await vectorDB.touchRuntimeDevice(req.runtimeDevice.id, capabilities);
+    res.json({ ok: true, deviceId: req.runtimeDevice.id, serverTime: new Date().toISOString() });
+  } catch (error) {
+    if (/能力信息/.test(error.message)) return res.status(400).json({ error: error.message });
+    throw error;
+  }
+});
+
+app.post('/api/runtime/agent/jobs/claim', authenticateRuntimeDevice, async (req, res) => {
+  await vectorDB.touchRuntimeDevice(req.runtimeDevice.id);
+  const job = await vectorDB.claimWorkflowRun(req.runtimeDevice);
+  res.setHeader('Cache-Control', 'no-store');
+  res.json({ job });
+});
+
+app.post('/api/runtime/agent/runs/:id/start', authenticateRuntimeDevice, async (req, res) => {
+  const run = await vectorDB.startWorkflowRun(req.runtimeDevice, req.params.id);
+  if (!run) return res.status(409).json({ error: '运行不属于此设备，或状态不允许启动' });
+  res.json({ run });
+});
+
+app.post('/api/runtime/agent/runs/:id/steps', authenticateRuntimeDevice, async (req, res) => {
+  try {
+    const nodeId = String(req.body?.nodeId || '').trim();
+    const nodeType = String(req.body?.nodeType || '').trim();
+    const nodeLabel = String(req.body?.nodeLabel || '').trim();
+    const status = String(req.body?.status || 'done');
+    if (!nodeId || nodeId.length > 160 || !nodeType || nodeType.length > 80 || !nodeLabel || nodeLabel.length > 160) {
+      return res.status(400).json({ error: '节点轨迹字段无效' });
+    }
+    if (!new Set(['done', 'failed', 'skipped']).has(status)) {
+      return res.status(400).json({ error: '节点轨迹状态无效' });
+    }
+    const durationMs = Math.max(0, Math.min(Number(req.body?.durationMs) || 0, 86_400_000));
+    const step = await vectorDB.addWorkflowRunStep(req.runtimeDevice, req.params.id, {
+      nodeId,
+      nodeType,
+      nodeLabel,
+      status,
+      input: boundedRuntimeValue(req.body?.input, '节点输入'),
+      output: boundedRuntimeValue(req.body?.output, '节点输出'),
+      error: req.body?.error ? String(req.body.error).slice(0, 8_000) : null,
+      startedAt: req.body?.startedAt ? String(req.body.startedAt) : null,
+      completedAt: req.body?.completedAt ? String(req.body.completedAt) : null,
+      durationMs,
+    });
+    if (!step) return res.status(409).json({ error: '运行不属于此设备，或尚未启动' });
+    res.status(201).json({ step });
+  } catch (error) {
+    if (/JSON|64KB|可序列化/.test(error.message)) return res.status(400).json({ error: error.message });
+    throw error;
+  }
+});
+
+app.post('/api/runtime/agent/runs/:id/complete', authenticateRuntimeDevice, async (req, res) => {
+  try {
+    const status = String(req.body?.status || 'failed');
+    if (!new Set(['succeeded', 'failed']).has(status)) return res.status(400).json({ error: '完成状态无效' });
+    const run = await vectorDB.completeWorkflowRun(req.runtimeDevice, req.params.id, {
+      status,
+      output: boundedRuntimeValue(req.body?.output, '运行输出'),
+      error: req.body?.error ? String(req.body.error).slice(0, 8_000) : null,
+    });
+    if (!run) return res.status(409).json({ error: '运行不属于此设备，或已经结束' });
+    res.json({ run });
+  } catch (error) {
+    if (/JSON|64KB|可序列化/.test(error.message)) return res.status(400).json({ error: error.message });
+    throw error;
+  }
+});
+
+app.post('/api/runtime/agent/permissions/request', authenticateRuntimeDevice, async (req, res) => {
+  try {
+    const runId = String(req.body?.runId || '').trim();
+    const nodeId = String(req.body?.nodeId || '').trim();
+    const capability = String(req.body?.capability || '').trim().toLowerCase();
+    const actionLabel = String(req.body?.actionLabel || '').trim();
+    if (!runId || !nodeId || nodeId.length > 160 || !/^[a-z][a-z0-9_.:-]{1,119}$/.test(capability)) {
+      return res.status(400).json({ error: '权限申请字段无效' });
+    }
+    if (!actionLabel || actionLabel.length > 160) return res.status(400).json({ error: '权限操作名称无效' });
+    const context = boundedRuntimeValue(req.body?.context || {}, '权限上下文');
+    const request = await vectorDB.requestRuntimePermission(req.runtimeDevice, {
+      runId, nodeId, capability, actionLabel, context,
+    });
+    if (!request) return res.status(409).json({ error: '运行不属于此设备，或尚未启动' });
+    res.status(request.status === 'pending' ? 201 : 200).json({
+      requestId: request.id,
+      status: request.status,
+      decision: request.decision || null,
+    });
+  } catch (error) {
+    if (/JSON|64KB|可序列化/.test(error.message)) return res.status(400).json({ error: error.message });
+    throw error;
+  }
+});
+
+app.post('/api/runtime/agent/permissions/:id/status', authenticateRuntimeDevice, async (req, res) => {
+  const request = await vectorDB.getRuntimePermissionRequestForDevice(req.runtimeDevice, req.params.id);
+  if (!request) return res.status(404).json({ error: '权限申请不存在' });
+  res.setHeader('Cache-Control', 'no-store');
+  res.json({ status: request.status, decision: request.decision || null });
+});
+
+app.post('/api/runtime/agent/permissions/:id/expire', authenticateRuntimeDevice, async (req, res) => {
+  const expired = await vectorDB.expireRuntimePermissionRequest(req.runtimeDevice, req.params.id);
+  if (!expired) return res.status(409).json({ error: '权限申请无法过期或已经处理' });
+  res.json({ message: '权限申请已过期' });
+});
+
+app.post('/api/runtime/agent/model/chat', authenticateRuntimeDevice, async (req, res) => {
+  try {
+    const messages = Array.isArray(req.body?.messages) ? req.body.messages : [];
+    if (messages.length < 1 || messages.length > 50) return res.status(400).json({ error: '模型消息数量无效' });
+    const normalizedMessages = messages.map(message => ({
+      role: new Set(['system', 'user', 'assistant']).has(message?.role) ? message.role : 'user',
+      content: String(message?.content || ''),
+    }));
+    boundedRuntimeValue(normalizedMessages, '模型消息');
+    const temperature = Math.max(0, Math.min(Number(req.body?.temperature) || 0.7, 2));
+    const resolvedModel = await resolveChatModel(req.runtimeDevice.user_id, {
+      provider: 'qwen',
+      model: String(req.body?.model || 'qwen-plus'),
+    });
+    const headers = { 'Content-Type': 'application/json' };
+    if (resolvedModel.key) headers.Authorization = `Bearer ${resolvedModel.key}`;
+    const upstream = await safeFetch(resolvedModel.endpoint, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        model: resolvedModel.model,
+        messages: normalizedMessages,
+        temperature,
+        stream: false,
+      }),
+    }, resolvedModel.securityOptions);
+    if (!upstream.ok) {
+      const detail = await readTextLimited(upstream, 16 * 1024);
+      throw new Error(`模型请求失败 (${upstream.status}): ${detail}`);
+    }
+    const payload = JSON.parse(await readTextLimited(upstream, MAX_PROXY_RESPONSE_BYTES));
+    res.json({
+      text: String(payload?.choices?.[0]?.message?.content || ''),
+      model: payload?.model || resolvedModel.model,
+      usage: payload?.usage || null,
+    });
+  } catch (error) {
+    console.error('Runtime 模型调用失败:', error.message);
+    res.status(502).json({ error: error.message });
+  }
+});
+
+// ==================== Local Runtime 与运行追踪结束 ====================
+
+app.get('/api/health', async (_, res) => {
+  let databaseReady = false;
+  let rateLimiterReady = !redisClient;
+  try {
+    await vectorDB.healthCheck();
+    databaseReady = true;
+    if (redisClient) {
+      await redisClient.ping();
+      rateLimiterReady = true;
+    }
+  } catch (error) {
+    console.error('Health check failed:', error.message);
+  }
+  const ok = databaseReady && rateLimiterReady;
+  res.status(ok ? 200 : 503).json({ ok, database: databaseReady, rateLimiter: rateLimiterReady });
+});
 
 // 语义匹配条件分支API
 app.post('/api/semantic-match', async (req, res) => {
@@ -1464,24 +2101,8 @@ ${conditionsText}
 
 请只返回匹配条件的编号（1、2、3等），如果没有匹配的条件则返回0。不要返回任何其他文字。`;
 
-    // 根据provider确定API配置
-    let key, baseUrl, endpoint;
-    
-    if (provider === 'local') {
-      key = null;
-      baseUrl = apiUrl || LOCAL_MODEL_URL;
-      endpoint = `${baseUrl}`;
-    } else {
-      if (provider === 'openai') key = apiKey || OPENAI_API_KEY; 
-      else if (provider === 'openrouter') key = apiKey || OPENROUTER_API_KEY; 
-      else key = apiKey || QWEN_API_KEY;
-      baseUrl = apiUrl || (provider === 'openai' ? 'https://api.openai.com/v1' : provider === 'openrouter' ? 'https://openrouter.ai/api/v1' : QWEN_BASE_URL);
-      endpoint = `${baseUrl}/chat/completions`;
-    }
-
-    if (!key && provider !== 'local') {
-      throw new Error('API key is required for remote models');
-    }
+    const resolvedModel = await resolveChatModel(req.user.id, { provider, apiUrl, apiKey, model });
+    const { key, endpoint, securityOptions } = resolvedModel;
 
     const headers = {
       'Content-Type': 'application/json',
@@ -1491,24 +2112,24 @@ ${conditionsText}
       headers['Authorization'] = `Bearer ${key}`;
     }
 
-    const response = await fetch(endpoint, {
+    const response = await safeFetch(endpoint, {
       method: 'POST',
       headers,
       body: JSON.stringify({
-        model: provider === 'local' ? (model || 'local-model') : model,
+        model: resolvedModel.model,
         messages: [{ role: 'user', content: prompt }],
         temperature: temperature || 0.1,
         max_tokens: 10, // 限制输出长度
         stream: false
       }),
-    });
+    }, securityOptions);
 
     if (!response.ok) {
-      const text = await response.text();
+      const text = await readTextLimited(response, 64 * 1024);
       throw new Error(`语义匹配请求失败: ${response.status} ${text}`);
     }
 
-    const result = await response.json();
+    const result = JSON.parse(await readTextLimited(response, MAX_PROXY_RESPONSE_BYTES));
     const responseText = result.choices?.[0]?.message?.content?.trim() || '0';
     
     // 解析返回的编号
@@ -1542,18 +2163,16 @@ app.post('/api/knowledge/add', async (req, res) => {
       return res.status(400).json({ error: 'title和content不能为空' });
     }
     
-    console.log('📝 添加动态数据 - 标题:', title.substring(0, 30));
-    
     // 生成内容的embedding
     let embedding = null;
     try {
-      embedding = await createEmbedding(content);
+      embedding = await createEmbedding(content, req.user.id);
       console.log('✅ 内容embedding生成成功');
     } catch (embError) {
       console.warn('⚠️ 生成内容embedding失败:', embError.message);
     }
     
-    const result = vectorDB.addDynamicData(title, content, embedding, metadata);
+    const result = await vectorDB.addDynamicData(req.user.id, title, content, embedding, metadata);
     
     console.log('💾 动态数据已保存到VectorDB:', result.id);
     
@@ -1592,12 +2211,13 @@ app.post('/api/knowledge/batch-add', async (req, res) => {
         // 生成embedding
         let embedding = null;
         try {
-          embedding = await createEmbedding(item.content);
+          embedding = await createEmbedding(item.content, req.user.id);
         } catch (embError) {
-          console.warn(`⚠️ 生成embedding失败 (${item.title}):`, embError.message);
+          console.warn('⚠️ 批量条目的embedding生成失败:', embError.message);
         }
         
-        const result = vectorDB.addDynamicData(
+        const result = await vectorDB.addDynamicData(
+          req.user.id,
           item.title,
           item.content,
           embedding,
@@ -1634,22 +2254,14 @@ app.post('/api/knowledge/search', async (req, res) => {
       return res.status(400).json({ error: 'query不能为空' });
     }
     
-    console.log('🔍 搜索动态知识 - 查询:', query);
-    
     // 生成查询embedding
-    const queryEmbedding = await createEmbedding(query);
+    const queryEmbedding = await createEmbedding(query, req.user.id);
     console.log('✅ 查询embedding生成成功');
     
     // 搜索动态数据
-    const results = vectorDB.searchDynamicData(queryEmbedding, top_k, threshold);
+    const results = await vectorDB.searchDynamicData(req.user.id, queryEmbedding, top_k, threshold);
     
     console.log(`📊 找到 ${results.length} 条相关知识`);
-    if (results.length > 0) {
-      results.forEach((r, i) => {
-        console.log(`  [${i + 1}] 相似度: ${r.similarity.toFixed(4)} - 标题: ${r.title.substring(0, 30)}`);
-      });
-    }
-    
     res.json({ 
       success: true,
       results: results,
@@ -1664,7 +2276,7 @@ app.post('/api/knowledge/search', async (req, res) => {
 // 获取知识库统计信息
 app.get('/api/knowledge/stats', async (req, res) => {
   try {
-    const stats = vectorDB.getDynamicDataStats();
+    const stats = await vectorDB.getDynamicDataStats(req.user.id);
     
     res.json({ 
       success: true,
@@ -1680,7 +2292,8 @@ app.get('/api/knowledge/stats', async (req, res) => {
 app.get('/api/knowledge/list', async (req, res) => {
   try {
     const { limit = 100 } = req.query;
-    const data = vectorDB.getAllDynamicData(parseInt(limit));
+    const safeLimit = Math.max(1, Math.min(Number.parseInt(limit, 10) || 100, 500));
+    const data = await vectorDB.getAllDynamicData(req.user.id, safeLimit);
     
     res.json({ 
       success: true,
@@ -1697,7 +2310,7 @@ app.get('/api/knowledge/list', async (req, res) => {
 app.delete('/api/knowledge/:id', async (req, res) => {
   try {
     const { id } = req.params;
-    const success = vectorDB.deleteDynamicData(id);
+    const success = await vectorDB.deleteDynamicData(req.user.id, id);
     
     if (success) {
       res.json({ 
@@ -1716,7 +2329,7 @@ app.delete('/api/knowledge/:id', async (req, res) => {
 // 清空所有动态数据
 app.post('/api/knowledge/clear', async (req, res) => {
   try {
-    const deletedCount = vectorDB.clearAllDynamicData();
+    const deletedCount = await vectorDB.clearAllDynamicData(req.user.id);
     
     console.log(`🗑️ 已清空 ${deletedCount} 条动态数据`);
     
@@ -1765,10 +2378,50 @@ app.get('/api/config', (_, res) => {
 
 // 根路径服务主页
 app.get('/', (_, res) => {
-  res.sendFile(path.join(process.cwd(), 'public', 'index.html'));
+  if (process.env.ENABLE_LEGACY_ADMIN === 'true') {
+    return res.redirect('/legacy/index.html');
+  }
+  return res.json({
+    name: 'NexusFlow API',
+    health: '/api/health',
+    legacyAdminEnabled: false,
+  });
 });
 
-const PORT = process.env.PORT || 5757;
-app.listen(PORT, () => console.log(`Server listening on http://localhost:${PORT}`));
+app.use((error, _req, res, _next) => {
+  console.error('Request failed:', error);
+  if (error instanceof multer.MulterError || error?.message === 'Unsupported file extension.') {
+    return res.status(400).json({ error: error.message });
+  }
+  if (error?.message === 'Origin is not allowed by CORS policy.') {
+    return res.status(403).json({ error: error.message });
+  }
+  return res.status(500).json({ error: '服务器内部错误' });
+});
+
+const isMainModule = process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href;
+if (isMainModule) {
+  const httpServer = app.listen(PORT, HOST, () => console.log(`Server listening on http://${HOST}:${PORT}`));
+  let shuttingDown = false;
+  const shutdown = async signal => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    console.log(`Received ${signal}; shutting down.`);
+    const forceExit = setTimeout(() => {
+      httpServer.closeAllConnections?.();
+      process.exit(1);
+    }, 10_000);
+    forceExit.unref();
+    await new Promise(resolve => httpServer.close(resolve));
+    await vectorDB.close();
+    clearTimeout(forceExit);
+    process.exit(0);
+  };
+  process.once('SIGTERM', () => void shutdown('SIGTERM'));
+  process.once('SIGINT', () => void shutdown('SIGINT'));
+}
+
+export { app, redisClient, vectorDB };
+export default app;
 
 

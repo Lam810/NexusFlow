@@ -1,165 +1,63 @@
 import React from 'react';
 
 interface WorkflowCardProps {
-  workflow: {
-    id: string;
-    name: string;
-    created_at: string;
-    updated_at: string;
-  };
+  workflow: { id: string; name: string; created_at: string; updated_at: string };
+  index?: number;
   onEdit: (workflowId: string) => void;
   onDelete: (workflowId: string) => void;
+  onRun?: (workflow: WorkflowCardProps['workflow']) => void;
   onDuplicate?: (workflowId: string) => void;
 }
 
-export default function WorkflowCard({ workflow, onEdit, onDelete, onDuplicate }: WorkflowCardProps) {
-  const formatDate = (dateString: string) => {
-    const date = new Date(dateString);
-    return date.toLocaleDateString('zh-CN', {
-      year: 'numeric',
-      month: 'short',
-      day: 'numeric',
-      hour: '2-digit',
-      minute: '2-digit'
-    });
-  };
+export default function WorkflowCard({ workflow, index = 0, onEdit, onDelete, onRun, onDuplicate }: WorkflowCardProps) {
+  const timestamp = workflow.updated_at || workflow.created_at;
+  const updated = new Date(timestamp.includes('T') ? timestamp : `${timestamp.replace(' ', 'T')}Z`);
+  const relativeTime = (() => {
+    const minutes = Math.max(0, Math.round((Date.now() - updated.getTime()) / 60_000));
+    if (minutes < 1) return '刚刚更新';
+    if (minutes < 60) return `${minutes} 分钟前`;
+    if (minutes < 1_440) return `${Math.floor(minutes / 60)} 小时前`;
+    return updated.toLocaleDateString('zh-CN', { month: 'short', day: 'numeric' });
+  })();
 
   return (
-    <div style={{
-      background: 'white',
-      borderRadius: '12px',
-      padding: '20px',
-      boxShadow: '0 2px 8px rgba(0,0,0,0.1)',
-      border: '1px solid #e1e5e9',
-      transition: 'all 0.3s ease',
-      cursor: 'pointer',
-      position: 'relative',
-      overflow: 'hidden'
-    }}
-    onMouseEnter={(e) => {
-      e.currentTarget.style.transform = 'translateY(-4px)';
-      e.currentTarget.style.boxShadow = '0 8px 25px rgba(0,0,0,0.15)';
-    }}
-    onMouseLeave={(e) => {
-      e.currentTarget.style.transform = 'translateY(0)';
-      e.currentTarget.style.boxShadow = '0 2px 8px rgba(0,0,0,0.1)';
-    }}
-    onClick={() => onEdit(workflow.id)}
+    <article
+      className="workflow-card"
+      style={{ '--card-delay': `${Math.min(index, 8) * 45}ms` } as React.CSSProperties}
+      tabIndex={0}
+      onClick={() => onEdit(workflow.id)}
+      onKeyDown={event => {
+        if (event.key === 'Enter' || event.key === ' ') {
+          event.preventDefault();
+          onEdit(workflow.id);
+        }
+      }}
     >
-      {/* 装饰性背景 */}
-      <div style={{
-        position: 'absolute',
-        top: 0,
-        right: 0,
-        width: '60px',
-        height: '60px',
-        background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
-        borderRadius: '0 12px 0 60px',
-        opacity: 0.1
-      }} />
-      
-      {/* 工作流图标 */}
-      <div style={{
-        width: '48px',
-        height: '48px',
-        background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
-        borderRadius: '12px',
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        marginBottom: '16px',
-        fontSize: '24px'
-      }}>
-        🔄
+      <div className="workflow-card-topline">
+        <span className="workflow-card-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24"><path d="M5 4v5h5M19 20v-5h-5M6.4 17.6A8 8 0 0 1 5 8.5M17.6 6.4A8 8 0 0 1 19 15.5" /></svg>
+        </span>
+        <span className="workflow-state"><i /> READY</span>
+        <button className="icon-button card-open" aria-label={`打开 ${workflow.name}`} onClick={event => { event.stopPropagation(); onEdit(workflow.id); }}>↗</button>
       </div>
 
-      {/* 工作流名称 */}
-      <h3 style={{
-        margin: '0 0 8px 0',
-        fontSize: '18px',
-        fontWeight: '600',
-        color: '#333',
-        lineHeight: '1.3'
-      }}>
-        {workflow.name}
-      </h3>
-
-      {/* 创建时间 */}
-      <div style={{
-        fontSize: '12px',
-        color: '#666',
-        marginBottom: '4px'
-      }}>
-        创建于: {formatDate(workflow.created_at)}
+      <div className="workflow-card-copy">
+        <h3>{workflow.name}</h3>
+        <p>Assistant workflow · {relativeTime}</p>
       </div>
 
-      {/* 更新时间 */}
-      <div style={{
-        fontSize: '12px',
-        color: '#666',
-        marginBottom: '16px'
-      }}>
-        更新于: {formatDate(workflow.updated_at)}
+      <div className="workflow-card-graph" aria-hidden="true">
+        <i /><span /><i /><span /><i />
       </div>
 
-      {/* 操作按钮 */}
-      <div style={{
-        display: 'flex',
-        gap: '8px',
-        justifyContent: 'flex-end'
-      }}>
-        {onDuplicate && (
-          <button
-            onClick={(e) => {
-              e.stopPropagation();
-              onDuplicate(workflow.id);
-            }}
-            style={{
-              background: '#f8f9fa',
-              border: '1px solid #e1e5e9',
-              color: '#666',
-              padding: '6px 12px',
-              borderRadius: '6px',
-              cursor: 'pointer',
-              fontSize: '12px',
-              transition: 'all 0.2s'
-            }}
-            onMouseEnter={(e) => {
-              e.currentTarget.style.background = '#e9ecef';
-            }}
-            onMouseLeave={(e) => {
-              e.currentTarget.style.background = '#f8f9fa';
-            }}
-          >
-            复制
-          </button>
-        )}
-        
-        <button
-          onClick={(e) => {
-            e.stopPropagation();
-            onDelete(workflow.id);
-          }}
-          style={{
-            background: '#ff4757',
-            border: 'none',
-            color: 'white',
-            padding: '6px 12px',
-            borderRadius: '6px',
-            cursor: 'pointer',
-            fontSize: '12px',
-            transition: 'all 0.2s'
-          }}
-          onMouseEnter={(e) => {
-            e.currentTarget.style.background = '#ff3742';
-          }}
-          onMouseLeave={(e) => {
-            e.currentTarget.style.background = '#ff4757';
-          }}
-        >
-          删除
-        </button>
-      </div>
-    </div>
+      <footer className="workflow-card-footer">
+        <span><i className="pulse-dot" /> 可运行</span>
+        <div>
+          {onRun && <button className="run-local-button" onClick={event => { event.stopPropagation(); onRun(workflow); }}>本机运行</button>}
+          {onDuplicate && <button onClick={event => { event.stopPropagation(); onDuplicate(workflow.id); }}>复制</button>}
+          <button className="danger-text" onClick={event => { event.stopPropagation(); onDelete(workflow.id); }}>删除</button>
+        </div>
+      </footer>
+    </article>
   );
 }

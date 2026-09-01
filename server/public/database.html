@@ -351,7 +351,7 @@
                 displayFiles(allFiles);
                 loadStats();
             } catch (error) {
-                fileList.innerHTML = '<div class="empty-state"><div class="empty-icon">❌</div>加载失败：' + error.message + '</div>';
+                fileList.innerHTML = '<div class="empty-state"><div class="empty-icon">❌</div>加载失败：' + escapeHtml(String(error.message || '未知错误')) + '</div>';
             }
         }
 
@@ -363,20 +363,26 @@
                 return;
             }
             
-            fileList.innerHTML = files.map(file => `
+            fileList.innerHTML = files.map(file => {
+              const safeFilename = escapeHtml(String(file.filename || ''));
+              return `
                 <div class="file-item">
                     <div class="file-header">
-                        <div class="file-name">${file.filename}</div>
-                        <button class="btn" onclick="deleteFile('${file.filename}')">删除</button>
+                        <div class="file-name">${safeFilename}</div>
+                        <button class="btn delete-file" data-filename="${safeFilename}">删除</button>
                     </div>
                     <div class="file-meta">
-                        <div><strong>文件类型:</strong> ${file.file_type}</div>
+                        <div><strong>文件类型:</strong> ${escapeHtml(String(file.file_type || ''))}</div>
                         <div><strong>文件大小:</strong> ${formatFileSize(file.file_size)}</div>
                         <div><strong>文档块数:</strong> ${file.chunk_count}</div>
                         <div><strong>上传时间:</strong> ${new Date(file.created_at).toLocaleString()}</div>
                     </div>
                 </div>
-            `).join('');
+              `;
+            }).join('');
+            fileList.querySelectorAll('.delete-file').forEach(button => {
+                button.addEventListener('click', () => deleteFile(button.dataset.filename || ''));
+            });
         }
 
         async function loadDocuments() {
@@ -390,7 +396,7 @@
                 allDocuments = data.documents || [];
                 displayDocuments(allDocuments);
             } catch (error) {
-                documentList.innerHTML = '<div class="empty-state"><div class="empty-icon">❌</div>加载失败：' + error.message + '</div>';
+                documentList.innerHTML = '<div class="empty-state"><div class="empty-icon">❌</div>加载失败：' + escapeHtml(String(error.message || '未知错误')) + '</div>';
             }
         }
 
@@ -406,11 +412,11 @@
                 <div class="document-item">
                     <div class="document-header">
                         <div class="document-id">文档块 #${doc.chunk_index}</div>
-                        <div class="chunk-index">来自: ${doc.filename}</div>
+                        <div class="chunk-index">来自: ${escapeHtml(String(doc.filename || ''))}</div>
                     </div>
                     <div class="document-meta">
-                        <div><strong>文档ID:</strong> ${doc.id}</div>
-                        <div><strong>文件类型:</strong> ${doc.file_type}</div>
+                        <div><strong>文档ID:</strong> ${escapeHtml(String(doc.id || ''))}</div>
+                        <div><strong>文件类型:</strong> ${escapeHtml(String(doc.file_type || ''))}</div>
                         <div><strong>创建时间:</strong> ${new Date(doc.created_at).toLocaleString()}</div>
                     </div>
                     <div class="document-content">${escapeHtml(doc.chunk_text)}</div>

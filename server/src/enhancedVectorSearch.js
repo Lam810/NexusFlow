@@ -1,5 +1,3 @@
-import VectorDB from './vectorDB.js';
-
 class EnhancedVectorSearch {
   constructor(vectorDB) {
     this.vectorDB = vectorDB;
@@ -8,7 +6,7 @@ class EnhancedVectorSearch {
   }
 
   // 增强的相似性搜索
-  async searchSimilar(queryEmbedding, options = {}) {
+  async searchSimilar(queryEmbedding, userId, options = {}) {
     const {
       topK = 5,
       threshold = this.similarityThreshold,
@@ -18,7 +16,7 @@ class EnhancedVectorSearch {
     } = options;
 
     // 获取所有嵌入向量
-    const documents = this.vectorDB.getAllEmbeddings();
+    const documents = await this.vectorDB.getAllEmbeddings(userId);
     
     if (documents.length === 0) {
       return [];
@@ -135,7 +133,7 @@ class EnhancedVectorSearch {
   }
 
   // 混合搜索（结合关键词和向量搜索）
-  async hybridSearch(query, queryEmbedding, options = {}) {
+  async hybridSearch(query, queryEmbedding, userId, options = {}) {
     const {
       topK = 5,
       keywordWeight = 0.3,
@@ -143,10 +141,10 @@ class EnhancedVectorSearch {
     } = options;
 
     // 向量搜索
-    const vectorResults = await this.searchSimilar(queryEmbedding, { topK: topK * 2 });
+    const vectorResults = await this.searchSimilar(queryEmbedding, userId, { topK: topK * 2 });
     
     // 关键词搜索
-    const keywordResults = this.keywordSearch(query, topK * 2);
+    const keywordResults = await this.keywordSearch(query, userId, topK * 2);
     
     // 合并和去重结果
     const combinedResults = this.combineSearchResults(vectorResults, keywordResults, {
@@ -158,9 +156,9 @@ class EnhancedVectorSearch {
   }
 
   // 关键词搜索
-  keywordSearch(query, topK) {
-    const documents = this.vectorDB.getAllDocuments();
-    const queryWords = query.toLowerCase().split(/\s+/);
+  async keywordSearch(query, userId, topK) {
+    const documents = await this.vectorDB.getAllDocuments(userId);
+    const queryWords = query.toLowerCase().split(/\s+/).filter(Boolean);
     
     const scoredDocs = documents.map(doc => {
       const text = doc.chunk_text.toLowerCase();
@@ -168,7 +166,12 @@ class EnhancedVectorSearch {
       
       // 计算关键词匹配分数
       queryWords.forEach(word => {
-        const matches = (text.match(new RegExp(word, 'g')) || []).length;
+        let matches = 0;
+        let offset = 0;
+        while ((offset = text.indexOf(word, offset)) !== -1) {
+          matches += 1;
+          offset += Math.max(word.length, 1);
+        }
         score += matches;
       });
       
@@ -230,7 +233,7 @@ class EnhancedVectorSearch {
   }
 
   // 智能纠错和建议
-  async suggestCorrections(query, searchResults) {
+  async suggestCorrections(query, searchResults, userId) {
     const suggestions = [];
     
     if (searchResults.length === 0) {
@@ -238,7 +241,7 @@ class EnhancedVectorSearch {
       suggestions.push({
         type: 'no_results',
         message: '未找到相关结果',
-        suggestions: await this.generateSearchSuggestions(query)
+        suggestions: await this.generateSearchSuggestions(query, userId)
       });
     } else if (searchResults[0].similarity < 0.5) {
       // 如果相似度较低，建议优化查询
@@ -253,8 +256,8 @@ class EnhancedVectorSearch {
   }
 
   // 生成搜索建议
-  async generateSearchSuggestions(query) {
-    const documents = this.vectorDB.getAllDocuments();
+  async generateSearchSuggestions(query, userId) {
+    const documents = await this.vectorDB.getAllDocuments(userId);
     const suggestions = [];
     
     // 基于现有文档生成建议
@@ -302,31 +305,32 @@ class EnhancedVectorSearch {
   }
 
   // 获取搜索统计
-  getSearchStats() {
+  getSearchStats(userId) {
+    const history = this.searchHistory.get(userId) || new Map();
     return {
-      totalSearches: this.searchHistory.size,
-      averageResults: this.calculateAverageResults(),
-      topQueries: this.getTopQueries()
+      totalSearches: history.size,
+      averageResults: this.calculateAverageResults(history),
+      topQueries: this.getTopQueries(history)
     };
   }
 
   // 计算平均结果数
-  calculateAverageResults() {
-    if (this.searchHistory.size === 0) return 0;
+  calculateAverageResults(history) {
+    if (history.size === 0) return 0;
     
     let totalResults = 0;
-    this.searchHistory.forEach(results => {
+    history.forEach(results => {
       totalResults += results.length;
     });
     
-    return totalResults / this.searchHistory.size;
+    return totalResults / history.size;
   }
 
   // 获取热门查询
-  getTopQueries() {
+  getTopQueries(history) {
     const queryCount = new Map();
     
-    this.searchHistory.forEach((results, query) => {
+    history.forEach((results, query) => {
       queryCount.set(query, (queryCount.get(query) || 0) + 1);
     });
     
@@ -337,13 +341,15 @@ class EnhancedVectorSearch {
   }
 
   // 记录搜索历史
-  recordSearch(query, results) {
-    this.searchHistory.set(query, results);
+  recordSearch(userId, query, results) {
+    if (!this.searchHistory.has(userId)) this.searchHistory.set(userId, new Map());
+    const history = this.searchHistory.get(userId);
+    history.set(query, results);
     
     // 限制历史记录大小
-    if (this.searchHistory.size > 100) {
-      const firstKey = this.searchHistory.keys().next().value;
-      this.searchHistory.delete(firstKey);
+    if (history.size > 100) {
+      const firstKey = history.keys().next().value;
+      history.delete(firstKey);
     }
   }
 }

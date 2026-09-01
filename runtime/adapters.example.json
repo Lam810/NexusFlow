@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "adapters": [
+    {
+      "id": "notepad",
+      "label": "Windows Notepad",
+      "executable": "C:\\Windows\\System32\\notepad.exe",
+      "actions": [
+        {
+          "id": "open_file",
+          "label": "Open a file",
+          "args": ["{{input.path}}"],
+          "wait": false,
+          "timeoutMs": 30000
+        }
+      ]
+    }
+  ]
+}

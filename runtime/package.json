@@ -1,0 +1,17 @@
+{
+  "name": "@nexusflow/local-runtime",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "nexusflow-runtime": "src/index.js"
+  },
+  "scripts": {
+    "start": "node src/index.js",
+    "check": "node --check src/index.js && node --check src/client.js && node --check src/executor.js && node --check src/security.js && node --check src/adapters.js",
+    "test": "node --test test/*.test.js"
+  },
+  "engines": {
+    "node": ">=20.19 <21 || >=22.13"
+  }
+}

@@ -8,8 +8,13 @@ yarn-debug.log*
 # Build outputs
 dist/
 build/
+public/
 .vite/
 *.db
+*.sqlite
+*.sqlite3
+uploads/
+coverage/
 # Environment variables
 .env
 .env.local
@@ -20,3 +25,5 @@ build/
 .vscode/
 .idea/
 *.log
+
+.vercel

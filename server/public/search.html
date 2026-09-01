@@ -370,7 +370,7 @@
                     resultsList.innerHTML = '<div class="empty-state"><div class="empty-icon">❌</div>搜索失败</div>';
                 }
             } catch (error) {
-                resultsList.innerHTML = '<div class="empty-state"><div class="empty-icon">❌</div>搜索出错：' + error.message + '</div>';
+                resultsList.innerHTML = '<div class="empty-state"><div class="empty-icon">❌</div>搜索出错：' + escapeHtml(String(error.message || '未知错误')) + '</div>';
             } finally {
                 searchBtn.disabled = false;
                 searchBtn.textContent = '搜索';
@@ -400,7 +400,7 @@
                             <div class="similarity-score">相似度: ${similarityPercent}%</div>
                         </div>
                         <div class="result-meta">
-                            <div><strong>文档ID:</strong> ${result.id}</div>
+                            <div><strong>文档ID:</strong> ${escapeHtml(String(result.id || ''))}</div>
                             <div><strong>相似度分数:</strong> ${similarity.toFixed(4)}</div>
                         </div>
                         <div class="result-content">${escapeHtml(result.text)}</div>

@@ -1,14 +1,5 @@
 import React, { useState, useEffect } from 'react';
 
-interface Workflow {
-  id: string;
-  name: string;
-  nodes: any[];
-  edges: any[];
-  created_at: string;
-  updated_at: string;
-}
-
 interface WorkflowManagerProps {
   token: string;
   onLoadWorkflow: (nodes: any[], edges: any[]) => void;
