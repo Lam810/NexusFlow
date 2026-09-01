@@ -304,12 +304,10 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
   width: 38px;
   height: 38px;
   flex: 0 0 auto;
+  background: url('/nexusflow-mark.svg') center / contain no-repeat;
   filter: drop-shadow(0 0 16px rgba(61, 214, 208, .28));
 }
-.nexus-mark span { position: absolute; display: block; background: var(--nf-cyan); border-radius: 2px; transform: rotate(30deg); }
-.nexus-mark span:nth-child(1) { width: 8px; height: 30px; left: 7px; top: 4px; }
-.nexus-mark span:nth-child(2) { width: 8px; height: 30px; right: 7px; top: 4px; }
-.nexus-mark span:nth-child(3) { width: 8px; height: 30px; left: 15px; top: 4px; background: #e8fbfa; }
+.nexus-mark span { display: none; }
 .nexus-mark.compact { width: 30px; height: 30px; transform: scale(.78); transform-origin: left center; }
 .brand-lockup { display: flex; align-items: center; gap: 13px; position: relative; z-index: 2; }
 .brand-lockup > div { display: grid; gap: 1px; }

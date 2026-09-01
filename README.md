@@ -1,11 +1,11 @@
 <div align="center">
 
-# NexusFlow
+<h1><img src="showcase/assets/nexusflow-mark.svg" width="38" height="38" alt="NexusFlow logo" /> NexusFlow</h1>
 
 **A visual workflow studio for assistant-style AI pipelines.**
 Drag-and-drop intent routing, retrieval, tool calls, and model orchestration — prototyped for AI PC / HarmonyOS-style assistants.
 
-**Product Showcase:** [wwwwwkkkkkk7777.github.io/nexusflow](https://wwwwwkkkkkk7777.github.io/nexusflow/)
+**Live App:** [nexusflow-rose.vercel.app](https://nexusflow-rose.vercel.app) · **Product Showcase:** [wwwwwkkkkkk7777.github.io/nexusflow](https://wwwwwkkkkkk7777.github.io/nexusflow/)
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-informational.svg)](LICENSE)
 [![CI](https://github.com/Lam810/NexusFlow/actions/workflows/ci.yml/badge.svg)](https://github.com/Lam810/NexusFlow/actions/workflows/ci.yml)
@@ -27,7 +27,7 @@ The project is not an official HarmonyOS application and does not include propri
 
 ## Prototype Status
 
-Explore the [NexusFlow product site](https://wwwwwkkkkkk7777.github.io/nexusflow/) or open the hosted build at [nexusflow-rose.vercel.app](https://nexusflow-rose.vercel.app). Public registration may be disabled; the deployment is a reference environment rather than a shared hosted service.
+Explore the [NexusFlow product site](https://wwwwwkkkkkk7777.github.io/nexusflow/) or open the hosted build at [nexusflow-rose.vercel.app](https://nexusflow-rose.vercel.app). Public registration is enabled on the current hosted build; self-hosted operators can control it with `ALLOW_REGISTRATION`.
 
 | Area | Current prototype scope |
 | --- | --- |

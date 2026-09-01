@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-labelledby="title desc">
+  <title id="title">NexusFlow</title>
+  <desc id="desc">Three angled flow bars in orange, ivory, and teal on a deep navy tile.</desc>
+  <rect width="64" height="64" rx="15" fill="#07111d"/>
+  <path d="M12 43 20 19h9l-8 24h-9Z" fill="#ff8a4c"/>
+  <path d="m24 47 11-33h9L33 47h-9Z" fill="#f4f1ea"/>
+  <path d="m38 43 7-21h8l-7 21h-8Z" fill="#53d2c8"/>
+</svg>
