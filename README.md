@@ -5,6 +5,8 @@
 **A visual workflow studio for assistant-style AI pipelines.**
 Drag-and-drop intent routing, retrieval, tool calls, and model orchestration — prototyped for AI PC / HarmonyOS-style assistants.
 
+**Product Showcase:** [wwwwwkkkkkk7777.github.io/nexusflow](https://wwwwwkkkkkk7777.github.io/nexusflow/)
+
 [![License: MIT](https://img.shields.io/badge/License-MIT-informational.svg)](LICENSE)
 [![CI](https://github.com/Lam810/NexusFlow/actions/workflows/ci.yml/badge.svg)](https://github.com/Lam810/NexusFlow/actions/workflows/ci.yml)
 [![TypeScript](https://img.shields.io/badge/TypeScript-React%20%2B%20Node-3178c6.svg)](client/package.json)
