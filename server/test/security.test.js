@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   assertSecureJwtSecret,
+  createPinnedLookup,
   isPrivateOrReservedAddress,
   safeFetch,
   sanitizeWorkflowNodes,
@@ -29,6 +30,22 @@ test('safe fetch rejects loopback targets before connecting', async () => {
     () => safeFetch('http://127.0.0.1:1/private'),
     /private or reserved network addresses are blocked/
   );
+});
+
+test('pinned DNS lookup supports single and all-address callback shapes', () => {
+  const lookup = createPinnedLookup({ address: '8.8.8.8', family: 4 });
+  let single;
+  let multiple;
+  lookup('example.com', { all: false }, (error, address, family) => {
+    assert.equal(error, null);
+    single = { address, family };
+  });
+  lookup('example.com', { all: true }, (error, addresses) => {
+    assert.equal(error, null);
+    multiple = addresses;
+  });
+  assert.deepEqual(single, { address: '8.8.8.8', family: 4 });
+  assert.deepEqual(multiple, [{ address: '8.8.8.8', family: 4 }]);
 });
 
 test('workflow secrets are stripped while template references are preserved', () => {

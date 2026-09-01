@@ -178,6 +178,17 @@ export function isPrivateOrReservedAddress(address) {
   return true;
 }
 
+export function createPinnedLookup(selected) {
+  const result = { address: selected.address, family: selected.family };
+  return (_hostname, options, callback) => {
+    if (options && typeof options === 'object' && options.all === true) {
+      callback(null, [result]);
+      return;
+    }
+    callback(null, result.address, result.family);
+  };
+}
+
 async function resolveSafeTarget(rawUrl, allowPrivate) {
   let url;
   try {
@@ -205,9 +216,7 @@ async function resolveSafeTarget(rawUrl, allowPrivate) {
   }
 
   const selected = addresses[0];
-  const lookup = (_hostname, _options, callback) => {
-    callback(null, selected.address, selected.family);
-  };
+  const lookup = createPinnedLookup(selected);
   const agent = url.protocol === 'https:'
     ? new https.Agent({ lookup, keepAlive: false })
     : new http.Agent({ lookup, keepAlive: false });
