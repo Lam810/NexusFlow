@@ -10,7 +10,7 @@
     "url": "https://github.com/Lam810/NexusFlow.git"
   },
   "scripts": {
-    "setup": "npm ci --prefix server && npm ci --prefix client",
+    "setup": "npm ci --prefix server && npm ci --prefix runtime && npm ci --prefix client",
     "dev:server": "npm --prefix server run dev",
     "dev:client": "npm --prefix client run dev",
     "build": "npm --prefix client run build",
@@ -19,7 +19,7 @@
     "deploy": "vercel",
     "deploy:production": "vercel --prod",
     "check": "npm --prefix server run check && npm --prefix server test && npm --prefix runtime run check && npm --prefix runtime test && npm --prefix client run typecheck && npm --prefix client run lint && npm --prefix client run build",
-    "audit": "npm audit --prefix server && npm audit --prefix client"
+    "audit": "npm audit --prefix server && npm audit --prefix runtime && npm audit --prefix client"
   },
   "engines": {
     "node": ">=20.19 <21 || >=22.13"

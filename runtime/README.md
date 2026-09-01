@@ -27,6 +27,8 @@ npm --prefix runtime start
 
 `NEXUSFLOW_ALLOWED_DIRS` uses the operating system path delimiter (`;` on Windows and `:` on macOS/Linux). A JSON string array also works on every platform.
 
+The Runtime automatically honors the standard `HTTP_PROXY`, `HTTPS_PROXY`, and `NO_PROXY` environment variables (including their lowercase forms). This lets the outbound connection use an existing corporate or filtered-network proxy without placing proxy details in NexusFlow configuration. Lowercase variables take precedence when both forms are present.
+
 ## Configuration
 
 | Variable | Default | Purpose |

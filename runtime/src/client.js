@@ -1,12 +1,39 @@
+import { EnvHttpProxyAgent, fetch as undiciFetch } from 'undici';
+
+function firstDefined(environment, lowerName, upperName) {
+  const name = Object.prototype.hasOwnProperty.call(environment, lowerName) ? lowerName : upperName;
+  return String(environment[name] || '').trim();
+}
+
+export function createRuntimeFetch({
+  environment = process.env,
+  fetchImpl = undiciFetch,
+  proxyAgentFactory = options => new EnvHttpProxyAgent(options),
+} = {}) {
+  const httpProxy = firstDefined(environment, 'http_proxy', 'HTTP_PROXY');
+  const httpsProxy = firstDefined(environment, 'https_proxy', 'HTTPS_PROXY');
+  if (!httpProxy && !httpsProxy) return fetchImpl;
+
+  const noProxy = firstDefined(environment, 'no_proxy', 'NO_PROXY');
+  const options = {};
+  if (httpProxy) options.httpProxy = httpProxy;
+  if (httpsProxy) options.httpsProxy = httpsProxy;
+  if (noProxy) options.noProxy = noProxy;
+  const dispatcher = proxyAgentFactory(options);
+
+  return (url, init = {}) => fetchImpl(url, { ...init, dispatcher });
+}
+
 export class RuntimeClient {
-  constructor({ baseUrl, token, timeoutMs = 65_000 }) {
+  constructor({ baseUrl, token, timeoutMs = 65_000, fetchImpl = createRuntimeFetch() }) {
     this.baseUrl = String(baseUrl || '').replace(/\/+$/, '');
     this.token = String(token || '');
     this.timeoutMs = timeoutMs;
+    this.fetchImpl = fetchImpl;
   }
 
   async request(path, body = {}) {
-    const response = await fetch(`${this.baseUrl}${path}`, {
+    const response = await this.fetchImpl(`${this.baseUrl}${path}`, {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${this.token}`,

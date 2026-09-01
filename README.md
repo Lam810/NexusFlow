@@ -193,7 +193,7 @@ $env:NEXUSFLOW_ADAPTERS_FILE="D:\NexusFlow\runtime\adapters.json"
 npm --prefix runtime start
 ```
 
-The Runtime only makes outbound HTTPS requests, stores no model API key, and exposes no local listening port. `system.info` is available without approval. File and application actions pause in the permission approval center; file writes additionally require `$env:NEXUSFLOW_ALLOW_WRITES="true"`. See [runtime/README.md](runtime/README.md) for adapter manifests, macOS/Linux syntax, supported nodes, and the security model.
+The Runtime only makes outbound HTTPS requests, stores no model API key, and exposes no local listening port. Standard `HTTP_PROXY`, `HTTPS_PROXY`, and `NO_PROXY` environment variables are honored automatically for corporate or filtered networks. `system.info` is available without approval. File and application actions pause in the permission approval center; file writes additionally require `$env:NEXUSFLOW_ALLOW_WRITES="true"`. See [runtime/README.md](runtime/README.md) for adapter manifests, macOS/Linux syntax, supported nodes, and the security model.
 
 ### Upgrading an existing database
 

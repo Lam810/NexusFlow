@@ -24,6 +24,7 @@ jobs:
           cache: npm
           cache-dependency-path: |
             server/package-lock.json
+            runtime/package-lock.json
             client/package-lock.json
 
       - name: Install server dependencies
@@ -31,6 +32,9 @@ jobs:
 
       - name: Install client dependencies
         run: npm ci --prefix client
+
+      - name: Install Local Runtime dependencies
+        run: npm ci --prefix runtime
 
       - name: Check server syntax
         run: npm run check --prefix server && node --check api/index.js
@@ -56,4 +60,5 @@ jobs:
       - name: Audit dependencies
         run: |
           npm audit --prefix server
+          npm audit --prefix runtime
           npm audit --prefix client
