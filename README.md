@@ -11,6 +11,7 @@ Drag-and-drop intent routing, retrieval, tool calls, and model orchestration —
 [![CI](https://github.com/Lam810/NexusFlow/actions/workflows/ci.yml/badge.svg)](https://github.com/Lam810/NexusFlow/actions/workflows/ci.yml)
 [![TypeScript](https://img.shields.io/badge/TypeScript-React%20%2B%20Node-3178c6.svg)](client/package.json)
 [![Status](https://img.shields.io/badge/status-developer%20prototype-f2a65a.svg)](#prototype-status)
+[![Ascend NPU](https://img.shields.io/badge/Ascend%20NPU-910C%20verified-0f6f7d.svg)](#run-the-models-on-an-ascend-npu)
 [![Live Demo](https://img.shields.io/badge/live%20demo-Vercel-00c7c7.svg)](https://nexusflow-rose.vercel.app)
 [![Product Site](https://img.shields.io/badge/product%20site-GitHub%20Pages-ff8a4c.svg)](https://wwwwwkkkkkk7777.github.io/nexusflow/)
 
