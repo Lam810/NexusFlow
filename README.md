@@ -184,6 +184,71 @@ For a local production preview, run the backend and then `npm run build && npm r
 
 For an Internet-facing Vercel deployment with Turso persistence, Upstash rate limiting, HttpOnly sessions, and first-account setup, follow [DEPLOYMENT.md](DEPLOYMENT.md).
 
+### Run the models on an Ascend NPU
+
+NexusFlow reaches models only over the OpenAI-compatible HTTP API, so it needs no
+code changes to run against Huawei Ascend hardware — but the surrounding setup has
+three requirements that are easy to miss. The following was verified on an
+**Ascend 910C** (2 dies per card, 64 GB HBM per die, CANN 8.5.0, aarch64).
+
+**1. Build vLLM from source.** The prebuilt wheel pins `torch==2.8.0` while
+`vllm-ascend` pins `torch==2.7.1`, so installing it replaces the torch that
+`torch-npu` needs:
+
+```bash
+export VLLM_TARGET_DEVICE=empty
+git clone -b v0.11.0 --depth 1 https://github.com/vllm-project/vllm.git
+pip install -e ./vllm --no-build-isolation
+pip install vllm-ascend==0.11.0
+pip install "setuptools<80"      # torch-npu imports pkg_resources, removed in 81
+
+source /usr/local/Ascend/ascend-toolkit/set_env.sh
+source /usr/local/Ascend/nnal/atb/set_env.sh   # NNAL/ATB is required, not optional
+```
+
+`vllm-ascend` calls `_register_atb_extensions()` unconditionally, so without
+`libatb.so` the engine dies during worker init rather than falling back.
+
+**2. Serve chat and embeddings behind one base URL.** The vector features need
+`/embeddings`, and the server reads both from a single stored base URL, so the two
+models have to answer on the same origin. A vLLM process serves one model, so run
+two and put an OpenAI-compatible router (LiteLLM, or a reverse proxy) in front:
+
+```bash
+# chat
+vllm serve /path/to/Qwen2.5-7B-Instruct \
+  --served-model-name qwen2.5-7b-instruct \
+  --port 8000 --max-model-len 4096
+
+# embeddings - note --enforce-eager
+vllm serve /path/to/gte-base-zh \
+  --served-model-name gte-base-zh --task embed \
+  --port 8001 --max-model-len 512 --enforce-eager
+```
+
+`--enforce-eager` is required for the embedding model, not a precaution: BERT-style
+encoders fail ACL graph capture with `Cannot run aclop operators during NPU graph
+capture. Current working aclop is Fill`, and the engine exits. Decoder models
+capture fine and do not need it.
+
+**3. Allow private-network requests.** A base URL saved through **模型设置** is
+treated as user-supplied and stays subject to the SSRF guard, so a local address is
+rejected until you opt in:
+
+```env
+ALLOW_PRIVATE_NETWORK_REQUESTS=true
+```
+
+Only an endpoint exactly matching `LOCAL_MODEL_URL` is exempt automatically, and
+that path carries no embedding model. Leave the flag `false` on any instance whose
+model endpoint is not on your own network — it is what stops a saved base URL from
+reaching internal addresses.
+
+Then in **模型设置**, set the base URL to the router's `/v1` root (not
+`/v1/chat/completions`), the chat model to the served chat name, and the embedding
+model to the served embedding name. vLLM matches on `--served-model-name` and
+returns 404 for a model directory or HuggingFace ID.
+
 ### Run workflows on an AI PC
 
 Open **运行记录** in the dashboard and choose **配对设备**. NexusFlow displays a device token once and generates the PowerShell commands for the current deployment. On the cloned AI PC, the essential configuration is:
